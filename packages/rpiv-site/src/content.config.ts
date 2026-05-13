@@ -17,6 +17,47 @@ const skills = defineCollection({
 	schema: z.object({
 		slug: z.string(),
 		tagline: z.string(),
+		/** Why this skill exists. 1–2 sentences. Markdown allowed. */
+		purpose: z.string().optional(),
+		/** Bulleted triggers + skip conditions. */
+		when_to_use: z.array(z.string()).optional(),
+		/** Required/optional inputs the skill consumes. */
+		inputs: z
+			.array(
+				z.object({
+					name: z.string(),
+					required: z.boolean().default(false),
+					source: z.string().optional(),
+					notes: z.string().optional(),
+				}),
+			)
+			.optional(),
+		/** Artifacts the skill writes. */
+		outputs: z
+			.array(
+				z.object({
+					artifact: z.string(),
+					path: z.string().optional(),
+					format: z.string().optional(),
+				}),
+			)
+			.optional(),
+		/** Ordered procedure with rationale per step. */
+		key_steps: z
+			.array(
+				z.object({
+					title: z.string(),
+					rationale: z.string(),
+				}),
+			)
+			.optional(),
+		/** Upstream feeders and downstream consumers (skill slugs). */
+		related: z
+			.object({
+				upstream: z.array(z.string()).default([]),
+				downstream: z.array(z.string()).default([]),
+			})
+			.optional(),
 	}),
 });
 

@@ -1,12 +1,17 @@
 import { type CollectionEntry, getCollection } from "astro:content";
 
 type SpecEntry = CollectionEntry<"skillSpecs">;
+type CopyEntry = CollectionEntry<"skills">;
 
 export type SkillEntry = {
 	slug: string;
 	tagline: string;
 	body: string | undefined;
+	/** Frontmatter from the SKILL.md spec (argument-hint, allowed-tools, etc.). */
 	data: SpecEntry["data"];
+	/** Frontmatter from the site-side copy (`src/content/skills/<slug>.md`). Holds the
+	 *  human-facing doc structure: purpose, when_to_use, inputs, outputs, key_steps, related. */
+	copy: CopyEntry["data"] | undefined;
 };
 
 const PIPELINE = ["discover", "research", "design", "plan", "implement", "validate"] as const;
@@ -58,6 +63,7 @@ function merge(spec: SpecEntry, copies: CollectionEntry<"skills">[]): SkillEntry
 		tagline: copy?.data.tagline ?? spec.data.description,
 		body: copy?.body,
 		data: spec.data,
+		copy: copy?.data,
 	};
 }
 
