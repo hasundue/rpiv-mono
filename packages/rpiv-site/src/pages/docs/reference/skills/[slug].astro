@@ -1,0 +1,56 @@
+---
+import type { GetStaticPaths } from "astro";
+import { getCollection, render } from "astro:content";
+import DocsLayout from "../../../../layouts/DocsLayout.astro";
+import { getSkill, getSkillSpec } from "../../../../lib/skills";
+
+export const getStaticPaths: GetStaticPaths = async () => {
+	const specs = await getCollection("skillSpecs");
+	return specs.map((spec) => ({
+		params: { slug: spec.data.name },
+		props: { name: spec.data.name },
+	}));
+};
+
+const { name } = Astro.props;
+const skill = await getSkill(name);
+const specEntry = await getSkillSpec(name);
+const { Content, headings } = await render(specEntry);
+---
+
+<DocsLayout
+	title={`${skill.slug} · rpiv-pi docs`}
+	description={skill.tagline}
+	headings={headings}
+	docArticle={{ section: "reference" }}
+>
+	<article class="prose prose--docs" data-pagefind-body>
+		<h1 data-pagefind-meta="title" class="mono">{skill.slug}</h1>
+		<p class="docs-description">{skill.tagline}</p>
+		{skill.data["argument-hint"] && (
+			<div class="ref-meta">
+				<span class="chip chip--sage">
+					{Array.isArray(skill.data["argument-hint"])
+						? skill.data["argument-hint"].join(" · ")
+						: skill.data["argument-hint"]}
+				</span>
+			</div>
+		)}
+		<Content />
+	</article>
+</DocsLayout>
+
+<style>
+	.docs-description {
+		color: var(--text-quiet);
+		font-size: var(--type-lead);
+		margin-bottom: var(--space-5);
+	}
+
+	.ref-meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		margin-bottom: var(--space-7);
+	}
+</style>

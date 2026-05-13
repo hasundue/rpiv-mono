@@ -62,4 +62,15 @@ const posts = defineCollection({
 	}),
 });
 
-export const collections = { skills, skillSpecs, agents, agentSpecs, extensions, posts };
+const docs = defineCollection({
+	loader: glob({ pattern: "**/*.md", base: "./src/content/docs" }),
+	schema: z.object({
+		title: z.string(),
+		description: z.string().optional(),
+		section: z.enum(["getting-started", "guides", "explanation", "reference"]),
+		order: z.number().default(0),
+		draft: z.boolean().default(false),
+	}),
+});
+
+export const collections = { skills, skillSpecs, agents, agentSpecs, extensions, posts, docs };

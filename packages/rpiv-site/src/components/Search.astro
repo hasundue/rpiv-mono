@@ -1,0 +1,53 @@
+---
+/* Pagefind search UI mount point.
+ * Loads pagefind-ui.js + pagefind-ui.css only on docs pages.
+ * CSS custom property overrides map Pagefind UI to the ink/washi palette. */
+---
+
+<div id="search"></div>
+
+<style>
+	:root {
+		--pagefind-ui-scale: 1;
+		--pagefind-ui-primary: var(--sage);
+		--pagefind-ui-text: var(--text);
+		--pagefind-ui-background: var(--ink-raised);
+		--pagefind-ui-border: var(--rule);
+		--pagefind-ui-tag: var(--kuro);
+		--pagefind-ui-border-radius: 2px;
+		--pagefind-ui-font-family: var(--font-mono);
+	}
+
+	#search {
+		margin-bottom: var(--space-5);
+	}
+</style>
+
+<script>
+	(() => {
+		const el = document.getElementById("search");
+		if (!el) return;
+
+		// Dynamic load — avoids 404 errors during astro dev when Pagefind files don't exist
+		const loadCSS = document.createElement("link");
+		loadCSS.href = "/pagefind/pagefind-ui.css";
+		loadCSS.rel = "stylesheet";
+		loadCSS.onerror = () => {}; // suppress 404
+		document.head.appendChild(loadCSS);
+
+		const loadJS = document.createElement("script");
+		loadJS.src = "/pagefind/pagefind-ui.js";
+		loadJS.onload = () => {
+			// @ts-expect-error — PagefindUI is loaded dynamically at runtime
+			if (typeof PagefindUI === "undefined") return;
+			// @ts-expect-error — runtime global from pagefind-ui.js
+			new PagefindUI({
+				element: "#search",
+				showSubResults: true,
+				showImages: false,
+			});
+		};
+		loadJS.onerror = () => {}; // suppress 404
+		document.head.appendChild(loadJS);
+	})();
+</script>

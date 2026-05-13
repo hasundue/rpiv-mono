@@ -32,6 +32,8 @@ jobs:
 
       - run: npm run build:site
 
+      - run: npx pagefind --site packages/rpiv-site/dist
+
       - uses: actions/configure-pages@v6
 
       - uses: actions/upload-pages-artifact@v5

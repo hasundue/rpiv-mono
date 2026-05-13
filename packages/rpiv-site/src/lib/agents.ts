@@ -95,3 +95,12 @@ export async function getAgentsByTier(): Promise<Array<{ tier: CapabilityTier; a
 	}
 	return TIER_ORDER.map((t) => ({ tier: t, agents: groups.get(t)! }));
 }
+
+/** Raw spec entry for rendering the agent spec body via render().
+ * Returns the CollectionEntry so Astro's render() can produce { Content, headings }. */
+export async function getAgentSpec(name: string): Promise<SpecEntry> {
+	const specs = await getCollection("agentSpecs");
+	const spec = specs.find((s) => s.data.name === name);
+	if (!spec) throw new Error(`agent spec not found: ${name}`);
+	return spec;
+}

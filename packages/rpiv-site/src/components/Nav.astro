@@ -26,6 +26,8 @@ const isHome = Astro.url.pathname === "/";
 				aria-label="rpiv-mono on GitHub"
 			>github</a>
 			<span class="nav__dot" aria-hidden="true">·</span>
+			<a class="nav__docs mono" href="/docs">docs</a>
+			<span class="nav__dot" aria-hidden="true">·</span>
 			<a class="nav__blog mono" href="/blog">blog</a>
 		</div>
 
@@ -138,6 +140,7 @@ const isHome = Astro.url.pathname === "/";
 		line-height: 1;
 	}
 	.nav__github,
+	.nav__docs,
 	.nav__blog {
 		font-size: var(--type-tiny);
 		letter-spacing: 0.14em;
@@ -148,6 +151,7 @@ const isHome = Astro.url.pathname === "/";
 		transition: color var(--dur-ink) var(--ease-ink);
 	}
 	.nav__github:hover,
+	.nav__docs:hover,
 	.nav__blog:hover { color: var(--sage); }
 
 	/* CTA chip — install is an action, not a wayfinding tab. Echoes the

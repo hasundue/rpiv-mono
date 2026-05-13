@@ -1,0 +1,45 @@
+---
+import type { GetStaticPaths } from "astro";
+import { render } from "astro:content";
+import DocsLayout from "../../layouts/DocsLayout.astro";
+import { getPublishedDocs } from "../../lib/docs";
+
+export const getStaticPaths: GetStaticPaths = async () => {
+	const docs = await getPublishedDocs();
+	return docs.map((entry) => ({
+		params: { slug: entry.id },
+		props: { entry },
+	}));
+};
+
+const { entry } = Astro.props;
+const { Content, headings } = await render(entry);
+---
+
+<DocsLayout
+	title={`${entry.data.title} · rpiv-pi docs`}
+	description={entry.data.description}
+	headings={headings}
+	docArticle={{ section: entry.data.section }}
+>
+	<article class="prose prose--docs" data-pagefind-body>
+		<h1 data-pagefind-meta="title">{entry.data.title}</h1>
+		{entry.data.description && (
+			<p class="docs-description">{entry.data.description}</p>
+		)}
+		<Content />
+	</article>
+</DocsLayout>
+
+<style>
+	/* Page-template-local styling. The docs-specific type scale for headings
+	   inside .prose--docs lives in src/styles/prose.css so it's shared with
+	   the reference skill/agent detail pages. */
+	.docs-description {
+		color: var(--text-quiet);
+		font-size: var(--type-lead);
+		line-height: var(--leading-relaxed);
+		margin-bottom: var(--space-6);
+		max-width: 56ch;
+	}
+</style>

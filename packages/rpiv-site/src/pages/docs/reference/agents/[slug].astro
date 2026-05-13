@@ -1,0 +1,57 @@
+---
+import type { GetStaticPaths } from "astro";
+import { getCollection, render } from "astro:content";
+import DocsLayout from "../../../../layouts/DocsLayout.astro";
+import { getAgentSpec, getAgentsByTier, tier } from "../../../../lib/agents";
+
+export const getStaticPaths: GetStaticPaths = async () => {
+	const specs = await getCollection("agentSpecs");
+	return specs.map((spec) => ({
+		params: { slug: spec.data.name },
+		props: { name: spec.data.name },
+	}));
+};
+
+const { name } = Astro.props;
+const tiers = await getAgentsByTier();
+const allAgents = tiers.flatMap((t) => t.agents);
+const agent = allAgents.find((a) => a.slug === name);
+if (!agent) throw new Error(`Agent not found: ${name}`);
+
+const specEntry = await getAgentSpec(name);
+const { Content, headings } = await render(specEntry);
+---
+
+<DocsLayout
+	title={`${agent.slug} · rpiv-pi docs`}
+	description={agent.tagline}
+	headings={headings}
+	docArticle={{ section: "reference" }}
+>
+	<article class="prose prose--docs" data-pagefind-body>
+		<h1 data-pagefind-meta="title" class="mono">{agent.slug}</h1>
+		<p class="docs-description">{agent.tagline}</p>
+		<div class="ref-meta">
+			<span class="chip chip--sage">{tier(agent)}</span>
+			{agent.data.tools && (
+				<span class="chip chip--muted">{agent.data.tools}</span>
+			)}
+		</div>
+		<Content />
+	</article>
+</DocsLayout>
+
+<style>
+	.docs-description {
+		color: var(--text-quiet);
+		font-size: var(--type-lead);
+		margin-bottom: var(--space-5);
+	}
+
+	.ref-meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		margin-bottom: var(--space-7);
+	}
+</style>

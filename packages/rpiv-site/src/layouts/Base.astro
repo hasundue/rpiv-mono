@@ -16,12 +16,16 @@ interface Props {
 		dateModified?: string;
 		author?: string;
 	};
+	docArticle?: {
+		section: string;
+	};
 }
 
 const {
 	title = "rpiv-pi",
 	description = "A pipeline of skills, subagents, and extensions for the Pi coding agent.",
 	article,
+	docArticle,
 } = Astro.props;
 const canonical = new URL(Astro.url.pathname, Astro.site).toString();
 // Square logo for X cards. X has been suppressing `summary_large_image` previews
@@ -69,6 +73,17 @@ const jsonLd = {
 					},
 				]
 			: []),
+		...(docArticle
+			? [
+					{
+						"@type": docArticle.section === "guides" ? ("HowTo" as const) : ("TechArticle" as const),
+						headline: title,
+						description,
+						url: canonical,
+						publisher: { "@type": "Organization" as const, name: "juicesharp" },
+					},
+				]
+			: []),
 	],
 };
 ---
@@ -91,7 +106,7 @@ const jsonLd = {
 
 		<meta property="og:site_name" content="rpiv-pi" />
 		<meta property="og:locale" content="en_US" />
-		<meta property="og:type" content={article ? "article" : "website"} />
+		<meta property="og:type" content={article || docArticle ? "article" : "website"} />
 		<meta property="og:title" content={title} />
 		<meta property="og:description" content={description} />
 		<meta property="og:url" content={canonical} />

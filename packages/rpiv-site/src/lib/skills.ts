@@ -113,3 +113,19 @@ export const PIPELINE_META = {
 		why: "Independent re-check of the plan against the working tree. Catches half-finished phases the implement loop missed.",
 	},
 } satisfies Record<PipelineStep, PipelineMeta>;
+
+/** All skills merged with visitor copy, sorted alphabetically by slug.
+ * Used by the Skills reference index page. */
+export async function getAllSkills(): Promise<SkillEntry[]> {
+	const [specs, copies] = await Promise.all([getCollection("skillSpecs"), getCollection("skills")]);
+	return specs.map((spec) => merge(spec, copies)).sort((a, b) => a.slug.localeCompare(b.slug));
+}
+
+/** Raw spec entry for rendering the SKILL.md body via render().
+ * Returns the CollectionEntry so Astro's render() can produce { Content, headings }. */
+export async function getSkillSpec(name: string): Promise<SpecEntry> {
+	const specs = await getCollection("skillSpecs");
+	const spec = specs.find((s) => s.data.name === name);
+	if (!spec) throw new Error(`skill spec not found: ${name}`);
+	return spec;
+}
