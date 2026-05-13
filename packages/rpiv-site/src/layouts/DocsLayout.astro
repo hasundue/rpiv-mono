@@ -44,8 +44,10 @@ const currentPath = Astro.url.pathname;
 
 <style>
 	.docs-layout {
+		/* 240px sidebar (was 220) — gives the Pagefind input + section nav
+		   room without the input wrapping or the nav items squeezing. */
 		display: grid;
-		grid-template-columns: 220px minmax(0, 1fr);
+		grid-template-columns: 240px minmax(0, 1fr);
 		gap: 0;
 		max-width: 1280px;
 		margin: 0 auto;
@@ -54,7 +56,7 @@ const currentPath = Astro.url.pathname;
 	}
 
 	.docs-layout.has-toc {
-		grid-template-columns: 220px minmax(0, 1fr) 180px;
+		grid-template-columns: 240px minmax(0, 1fr) 180px;
 	}
 
 	.docs-sidebar {
