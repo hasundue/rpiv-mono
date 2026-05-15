@@ -1,20 +1,34 @@
 /**
- * Agent auto-copy — copies bundled agents into <cwd>/.pi/agents/.
+ * Agent auto-copy — copies bundled agents into ~/.pi/agent/agents/.
  *
  * Pure utility. No ExtensionAPI interactions.
  *
- * Concurrency: NOT safe across multiple Pi sessions sharing one cwd. Two
- * sessions racing here may produce a partial manifest where the loser's
- * mutations are untracked. Per-cwd advisory locking is a deferred follow-up
- * (see CHANGELOG known-limitations and review findings Q12/Q13). The path
- * allowlist in readManifest neutralises the worst-case (arbitrary-path
- * unlink) regardless of concurrency.
+ * Concurrency: NOT safe across multiple Pi sessions sharing one target dir.
+ * The temp+rename atomic write in writeManifest guarantees the on-disk manifest
+ * file is always a complete valid JSON (no truncated/half-written content), but
+ * the read-modify-write lost-update problem remains: two sessions both reading
+ * the manifest before either writes will race, and the second writer overwrites
+ * the first's entries with its own stale snapshot. Advisory locking is a
+ * deferred follow-up (see CHANGELOG known-limitations). The path allowlist in
+ * readManifest neutralises the worst-case (arbitrary-path unlink) regardless of
+ * concurrency.
  */
 
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { isPlainObject, toErrorMessage } from "./utils.js";
 
 // ---------------------------------------------------------------------------
@@ -84,6 +98,61 @@ function emptySyncResult(): SyncResult {
 		pendingRemove: [],
 		errors: [],
 	};
+}
+
+/** Discriminant for why a per-cwd directory was left intact. */
+export const CLEANUP_SKIP_REASON = {
+	/** No manifest present — directory was never installed by rpiv (hand-managed). */
+	UNMANAGED: "unmanaged",
+	/** Managed file content diverges from current bundle source (user edit, deletion, or source change). */
+	DIVERGED: "diverged",
+	/** Directory contains non-managed files (user added custom agents). */
+	CUSTOM_FILES: "custom-files",
+} as const;
+
+export type CleanupSkipReason = (typeof CLEANUP_SKIP_REASON)[keyof typeof CLEANUP_SKIP_REASON];
+
+export interface CleanupSkip {
+	dir: string;
+	reason: CleanupSkipReason;
+}
+
+export interface CleanupResult {
+	/** Per-cwd agent directories successfully removed (all managed files matched source). */
+	cleanedUp: string[];
+	/** Directories preserved with discriminated reason — see CLEANUP_SKIP_REASON. */
+	skipped: CleanupSkip[];
+	/** Per-file errors collected during cleanup. */
+	errors: SyncError[];
+}
+
+/** Create an empty CleanupResult with all arrays initialized. */
+function emptyCleanupResult(): CleanupResult {
+	return {
+		cleanedUp: [],
+		skipped: [],
+		errors: [],
+	};
+}
+
+/**
+ * Format skip counts as a comma-joined parts list ("N edited, M with custom files").
+ * Shared by session_start notifyCleanup and /rpiv-update-agents handler so the
+ * two consumer surfaces describe preserved directories identically.
+ */
+export function summarizeCleanupSkips(skipped: CleanupSkip[]): string {
+	if (skipped.length === 0) return "";
+	const counts: Record<CleanupSkipReason, number> = {
+		unmanaged: 0,
+		diverged: 0,
+		"custom-files": 0,
+	};
+	for (const s of skipped) counts[s.reason]++;
+	const parts: string[] = [];
+	if (counts.unmanaged > 0) parts.push(`${counts.unmanaged} unmanaged`);
+	if (counts.diverged > 0) parts.push(`${counts.diverged} with user edits`);
+	if (counts["custom-files"] > 0) parts.push(`${counts["custom-files"]} with custom files`);
+	return parts.join(", ");
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +284,23 @@ function writeManifest(targetDir: string, manifest: Manifest, result: SyncResult
 	try {
 		const ordered: Manifest = {};
 		for (const k of Object.keys(manifest).sort()) ordered[k] = manifest[k];
-		writeFileSync(manifestPath, `${JSON.stringify(ordered, null, 2)}\n`, "utf-8");
+		const content = `${JSON.stringify(ordered, null, 2)}\n`;
+		// Atomic write: tmp file in same dir + renameSync (POSIX same-filesystem guarantee).
+		// Prevents write-write corruption under widened concurrency (global target).
+		// Pid-suffixed so concurrent sessions don't unlink each other's in-flight tmp files
+		// on the failure path (see catch's unlinkSync below).
+		const tmpFile = join(targetDir, `${MANIFEST_FILE}.${process.pid}.tmp`);
+		try {
+			writeFileSync(tmpFile, content, "utf-8");
+			renameSync(tmpFile, manifestPath);
+		} catch (inner) {
+			try {
+				unlinkSync(tmpFile);
+			} catch {
+				/* ignore */
+			}
+			throw inner;
+		}
 	} catch (e) {
 		result.errors.push({
 			op: SYNC_OP.MANIFEST_WRITE,
@@ -420,7 +505,7 @@ function commitStaleUnlinks(
 // ---------------------------------------------------------------------------
 
 /**
- * Synchronize bundled agents from <PACKAGE_ROOT>/agents/ into <cwd>/.pi/agents/.
+ * Synchronize bundled agents from <PACKAGE_ROOT>/agents/ into ~/.pi/agent/agents/.
  *
  * Resolution policy (apply=false, session_start):
  *   - New source files → always copied.
@@ -430,7 +515,7 @@ function commitStaleUnlinks(
  *     - V2 marker absent (legacy v1, missing, or never-installed) → auto-update;
  *       package wins. Triggers exactly while transitioning to v2; the marker
  *       file (.rpiv-managed.v2) is written once committed and never re-fires
- *       for this project, surviving JSON corruption / partial writes / empty-
+ *       for this installation, surviving JSON corruption / partial writes / empty-
  *       hash collapse.
  *     - otherwise (V2 marker present, dest differs from recorded hash) →
  *       pendingUpdate (gated; respects user edits).
@@ -445,14 +530,14 @@ function commitStaleUnlinks(
  *
  * Never throws — errors are collected in `result.errors`.
  */
-export function syncBundledAgents(cwd: string, apply: boolean): SyncResult {
+export function syncBundledAgents(apply: boolean): SyncResult {
 	const result = emptySyncResult();
 
 	if (!existsSync(BUNDLED_AGENTS_DIR)) {
 		return result;
 	}
 
-	const targetDir = join(cwd, ".pi", "agents");
+	const targetDir = join(getAgentDir(), "agents");
 	try {
 		mkdirSync(targetDir, { recursive: true });
 	} catch (e) {
@@ -485,6 +570,100 @@ export function syncBundledAgents(cwd: string, apply: boolean): SyncResult {
 
 	// Pass C — commit unlinks after the manifest is durable.
 	commitStaleUnlinks(toUnlink, manifest, newManifest, targetDir, result);
+
+	return result;
+}
+
+/**
+ * Clean up per-cwd agent directories from pre-global-sync installs.
+ *
+ * Conservative all-or-nothing gate: removes `<cwd>/.pi/agents/` only when:
+ *   1. A manifest exists (we installed these files)
+ *   2. Every managed file matches current source content
+ *   3. No non-managed files exist in the directory
+ *
+ * If any check fails, the directory is left intact. Never throws — errors
+ * are collected in the CleanupResult.
+ */
+export function cleanupPerCwdAgents(cwd: string): CleanupResult {
+	const result = emptyCleanupResult();
+	const perCwdDir = join(cwd, ".pi", "agents");
+
+	if (!existsSync(perCwdDir)) return result;
+	const manifest = readManifest(perCwdDir);
+	if (Object.keys(manifest).length === 0) {
+		// Edge state 1: no manifest (never synced by us, or hand-managed)
+		result.skipped.push({ dir: perCwdDir, reason: CLEANUP_SKIP_REASON.UNMANAGED });
+		return result;
+	}
+
+	// Edge state 2: verify all managed files match current source content
+	for (const [name] of Object.entries(manifest)) {
+		const srcPath = safeJoin(BUNDLED_AGENTS_DIR, name);
+		const destPath = safeJoin(perCwdDir, name);
+		if (srcPath === null || destPath === null) {
+			// Crafted manifest key would escape allowlist — treat as unmanaged.
+			result.skipped.push({ dir: perCwdDir, reason: CLEANUP_SKIP_REASON.UNMANAGED });
+			return result;
+		}
+
+		let srcContent: Buffer;
+		try {
+			srcContent = readFileSync(srcPath);
+		} catch {
+			// Source file no longer exists — can't verify against bundle, treat as diverged.
+			result.skipped.push({ dir: perCwdDir, reason: CLEANUP_SKIP_REASON.DIVERGED });
+			return result;
+		}
+
+		if (!existsSync(destPath)) {
+			// Managed file missing from disk — user deleted it, treat as diverged.
+			result.skipped.push({ dir: perCwdDir, reason: CLEANUP_SKIP_REASON.DIVERGED });
+			return result;
+		}
+
+		let destContent: Buffer;
+		try {
+			destContent = readFileSync(destPath);
+		} catch (e) {
+			// Hard failure — surface as error only (do not double-count in skipped).
+			result.errors.push({ op: SYNC_OP.READ_DEST, message: toErrorMessage(e) });
+			return result;
+		}
+
+		if (sha256(destContent) !== sha256(srcContent)) {
+			// User edited this file — conservative gate.
+			result.skipped.push({ dir: perCwdDir, reason: CLEANUP_SKIP_REASON.DIVERGED });
+			return result;
+		}
+	}
+
+	// Edge state 3: check for non-managed files
+	try {
+		const allFiles = readdirSync(perCwdDir);
+		const managedNames = new Set(Object.keys(manifest));
+		const managedMetadata = new Set([MANIFEST_FILE, V2_MARKER_FILE]);
+		for (const f of allFiles) {
+			if (!managedNames.has(f) && !managedMetadata.has(f)) {
+				// Non-managed file present (user custom agent or other content)
+				result.skipped.push({ dir: perCwdDir, reason: CLEANUP_SKIP_REASON.CUSTOM_FILES });
+				return result;
+			}
+		}
+	} catch (e) {
+		// Hard failure — surface as error only (do not double-count in skipped).
+		result.errors.push({ op: SYNC_OP.READ_DEST, message: toErrorMessage(e) });
+		return result;
+	}
+
+	// Happy path: all checks passed, safe to remove
+	try {
+		rmSync(perCwdDir, { recursive: true, force: true });
+		result.cleanedUp.push(perCwdDir);
+	} catch (e) {
+		// Hard failure — surface as error only (do not double-count in skipped).
+		result.errors.push({ op: SYNC_OP.REMOVE, message: toErrorMessage(e) });
+	}
 
 	return result;
 }

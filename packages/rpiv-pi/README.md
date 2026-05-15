@@ -91,7 +91,7 @@ pi install npm:@juicesharp/rpiv-pi
 ### First Session
 
 On first Pi Agent session start, rpiv-pi automatically:
-- Copies agent profiles to `<cwd>/.pi/agents/`
+- Copies agent profiles to `~/.pi/agent/agents/` (user-global, shared across all projects)
 - Detects outdated or removed agents on subsequent starts
 - Scaffolds `thoughts/shared/` directories for pipeline artifacts
 - Shows a warning if any sibling plugins are missing
@@ -180,7 +180,7 @@ Invoke via `/skill:<name>` from inside a Pi Agent session.
 | Command | Description |
 |---|---|
 | `/rpiv-setup` | Install all sibling plugins in one go |
-| `/rpiv-update-agents` | Sync rpiv agent profiles: add new, update changed, remove stale |
+| `/rpiv-update-agents` | Refresh `~/.pi/agent/agents/` from bundled agent definitions and clean up legacy per-project agent directories |
 | `/advisor` | Configure advisor model and reasoning effort |
 | `/btw` | Ask a side question without polluting the main conversation _(requires `@juicesharp/rpiv-btw`, opt-in)_ |
 | `/languages` | Pick the UI language for rpiv-* TUI strings (Deutsch / English / Español / Français / Português / Português (Brasil) / Русский / Українська) |
@@ -225,7 +225,7 @@ Pi Agent discovers extensions via `"extensions": ["./extensions"]` and skills vi
 - **Side questions** _(opt-in: `pi install npm:@juicesharp/rpiv-btw`)_ - type `/btw <question>` anytime (even mid-stream) to ask the primary model a one-off question; answer appears in a borderless bottom overlay and never enters the main conversation
 - **UI language** - run `/languages` to pick the locale for rpiv-* TUI strings, or pass `pi --locale <code>` at startup. Detection priority: flag → `~/.config/rpiv-i18n/locale.json` → `LANG` / `LC_ALL` → English. LLM-facing copy stays English by design
 - **Agent concurrency** - open the `/agents` overlay and tune `Settings → Max concurrency` to match your provider's rate limits. `@tintinweb/pi-subagents` owns this setting; rpiv-pi does not seed it.
-- **Agent profiles** - editable at `<cwd>/.pi/agents/`; sync from bundled defaults with `/rpiv-update-agents` (overwrites rpiv-managed files, preserves your custom agents)
+- **Agent profiles** - synced to `~/.pi/agent/agents/` from bundled defaults; refresh with `/rpiv-update-agents` (overwrites rpiv-managed files, preserves your custom agents).
 
 ## Uninstall
 

@@ -1,10 +1,11 @@
 /**
- * /rpiv-update-agents — apply-mode sync of bundled agents into <cwd>/.pi/agents/.
+ * /rpiv-update-agents — apply-mode sync of bundled agents into ~/.pi/agent/agents/.
+ * Also cleans up legacy per-cwd agent directories.
  * Adds new, overwrites changed managed files, removes stale managed files.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type SyncResult, syncBundledAgents } from "./agents.js";
+import { cleanupPerCwdAgents, type SyncResult, summarizeCleanupSkips, syncBundledAgents } from "./agents.js";
 
 const MSG_UP_TO_DATE = "All agents already up-to-date.";
 const MSG_NO_CHANGES = "No changes needed.";
@@ -15,11 +16,20 @@ const msgSyncedWithErrors = (summary: string, errors: string[]) =>
 
 export function registerUpdateAgentsCommand(pi: ExtensionAPI): void {
 	pi.registerCommand("rpiv-update-agents", {
-		description: "Sync rpiv-pi bundled agents into .pi/agents/: add new, update changed, remove stale",
+		description:
+			"Sync rpiv-pi bundled agents into ~/.pi/agent/agents/: add new, update changed, remove stale. Also cleans up legacy per-project agent directories.",
 		handler: async (_args, ctx) => {
-			const result = syncBundledAgents(ctx.cwd, true);
+			const cleanup = cleanupPerCwdAgents(ctx.cwd);
+			const result = syncBundledAgents(true);
 			if (!ctx.hasUI) return;
-			ctx.ui.notify(formatSyncReport(result), result.errors.length > 0 ? "warning" : "info");
+			const parts: string[] = [];
+			if (cleanup.cleanedUp.length > 0) parts.push(`${cleanup.cleanedUp.length} old dir(s) cleaned up`);
+			if (cleanup.skipped.length > 0)
+				parts.push(`${cleanup.skipped.length} old dir(s) preserved (${summarizeCleanupSkips(cleanup.skipped)})`);
+			if (cleanup.errors.length > 0) parts.push(`${cleanup.errors.length} cleanup error(s)`);
+			const syncReport = formatSyncReport(result);
+			const fullReport = parts.length > 0 ? `${parts.join(", ")}. ${syncReport}` : syncReport;
+			ctx.ui.notify(fullReport, result.errors.length + cleanup.errors.length > 0 ? "warning" : "info");
 		},
 	});
 }

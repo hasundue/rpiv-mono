@@ -13,7 +13,13 @@ import {
 	isToolCallEventType,
 	type ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
-import { type SyncResult, syncBundledAgents } from "./agents.js";
+import {
+	type CleanupResult,
+	cleanupPerCwdAgents,
+	type SyncResult,
+	summarizeCleanupSkips,
+	syncBundledAgents,
+} from "./agents.js";
 import { FLAG_DEBUG, MSG_TYPE_GIT_CONTEXT } from "./constants.js";
 import {
 	clearGitContextCache,
@@ -33,7 +39,7 @@ const THOUGHTS_DIRS = [
 	"thoughts/shared/reviews",
 ] as const;
 
-const msgAgentsAdded = (n: number) => `Copied ${n} rpiv-pi agent(s) to .pi/agents/`;
+const msgAgentsAdded = (n: number) => `Copied ${n} rpiv-pi agent(s) to ~/.pi/agent/agents/`;
 const msgAgentsHealed = (parts: string[]) => `Synced bundled agent(s): ${parts.join(", ")}.`;
 const msgAgentsDrift = (parts: string[]) => `${parts.join(", ")} agent(s). Run /rpiv-update-agents to sync.`;
 const msgAgentsErrors = (n: number) => `Agent sync reported ${n} error(s). Run /rpiv-update-agents for details.`;
@@ -79,8 +85,10 @@ async function onSessionStart(
 	injectRootGuidance(ctx.cwd, pi);
 	scaffoldThoughtsDirs(ctx.cwd);
 	await injectGitContext(pi, (msg) => sendGitContextMessage(pi, msg));
-	const agents = syncBundledAgents(ctx.cwd, false);
+	const cleanup = cleanupPerCwdAgents(ctx.cwd);
+	const agents = syncBundledAgents(false);
 	if (ctx.hasUI) {
+		notifyCleanup(ctx.ui, cleanup);
 		notifyAgentSyncDrift(ctx.ui, agents);
 		warnMissingSiblings(ctx.ui);
 	}
@@ -154,6 +162,21 @@ function notifyAgentSyncDrift(ui: UI, result: SyncResult): void {
 	}
 	if (result.errors.length > 0) {
 		ui.notify(msgAgentsErrors(result.errors.length), "warning");
+	}
+}
+
+function notifyCleanup(ui: UI, result: CleanupResult): void {
+	if (result.cleanedUp.length > 0) {
+		ui.notify(`Cleaned up ${result.cleanedUp.length} per-project agent directory (migrated to global)`, "info");
+	}
+	if (result.skipped.length > 0) {
+		ui.notify(
+			`Preserved ${result.skipped.length} per-project agent directory (${summarizeCleanupSkips(result.skipped)})`,
+			"info",
+		);
+	}
+	if (result.errors.length > 0) {
+		ui.notify(`Agent cleanup reported ${result.errors.length} error(s)`, "warning");
 	}
 }
 

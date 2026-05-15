@@ -1,5 +1,5 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockCtx, createMockPi, stubGitExec } from "@juicesharp/rpiv-test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,11 +18,16 @@ vi.mock("./agents.js", async (importOriginal) => {
 			pendingRemove: [],
 			errors: [],
 		})),
+		cleanupPerCwdAgents: vi.fn(() => ({
+			cleanedUp: [],
+			skipped: [],
+			errors: [],
+		})),
 	};
 });
 
 import type { SyncResult } from "./agents.js";
-import { SYNC_OP, syncBundledAgents } from "./agents.js";
+import { cleanupPerCwdAgents, SYNC_OP, syncBundledAgents } from "./agents.js";
 import { clearGitContextCache, getGitContext, resetInjectedMarker, takeGitContextIfChanged } from "./git-context.js";
 import { clearInjectionState } from "./guidance.js";
 import { findMissingSiblings } from "./package-checks.js";
@@ -161,6 +166,64 @@ describe("session_start hook — notifications", () => {
 		expect(healCall?.[1]).toBe("info");
 	});
 
+	it("notifyCleanup: emits 'Cleaned up' info when cleanedUp > 0", async () => {
+		vi.mocked(syncBundledAgents).mockReturnValueOnce(emptySync);
+		vi.mocked(cleanupPerCwdAgents).mockReturnValueOnce({
+			cleanedUp: ["/tmp/old-project/.pi/agents"],
+			skipped: [],
+			errors: [],
+		});
+		vi.mocked(findMissingSiblings).mockReturnValueOnce([]);
+		const { pi, captured } = createMockPi({ exec: stubGitExec({}) as never });
+		registerSessionHooks(pi);
+		const ctx = createMockCtx({ cwd: projectDir, hasUI: true });
+		await captured.events.get("session_start")?.[0]({ reason: "startup" } as never, ctx as never);
+		const cleanCall = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.find(
+			(c) => typeof c[0] === "string" && /Cleaned up \d+ per-project agent/.test(c[0]),
+		);
+		expect(cleanCall).toBeDefined();
+		expect(cleanCall?.[1]).toBe("info");
+	});
+
+	it("notifyCleanup: emits 'Preserved ...' info with reason summary when skipped > 0", async () => {
+		vi.mocked(syncBundledAgents).mockReturnValueOnce(emptySync);
+		vi.mocked(cleanupPerCwdAgents).mockReturnValueOnce({
+			cleanedUp: [],
+			skipped: [{ dir: "/tmp/old-project/.pi/agents", reason: "diverged" }],
+			errors: [],
+		});
+		vi.mocked(findMissingSiblings).mockReturnValueOnce([]);
+		const { pi, captured } = createMockPi({ exec: stubGitExec({}) as never });
+		registerSessionHooks(pi);
+		const ctx = createMockCtx({ cwd: projectDir, hasUI: true });
+		await captured.events.get("session_start")?.[0]({ reason: "startup" } as never, ctx as never);
+		const skipCall = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.find(
+			(c) => typeof c[0] === "string" && /Preserved \d+ per-project agent/.test(c[0]),
+		);
+		expect(skipCall).toBeDefined();
+		expect(skipCall?.[0]).toContain("1 with user edits");
+		expect(skipCall?.[1]).toBe("info");
+	});
+
+	it("notifyCleanup: emits warning when cleanup errors > 0", async () => {
+		vi.mocked(syncBundledAgents).mockReturnValueOnce(emptySync);
+		vi.mocked(cleanupPerCwdAgents).mockReturnValueOnce({
+			cleanedUp: [],
+			skipped: [],
+			errors: [{ op: SYNC_OP.REMOVE, message: "EACCES" }],
+		});
+		vi.mocked(findMissingSiblings).mockReturnValueOnce([]);
+		const { pi, captured } = createMockPi({ exec: stubGitExec({}) as never });
+		registerSessionHooks(pi);
+		const ctx = createMockCtx({ cwd: projectDir, hasUI: true });
+		await captured.events.get("session_start")?.[0]({ reason: "startup" } as never, ctx as never);
+		const warnCall = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls.find(
+			(c) => c[1] === "warning" && typeof c[0] === "string" && /Agent cleanup reported/.test(c[0]),
+		);
+		expect(warnCall).toBeDefined();
+		expect(warnCall?.[0]).toContain("1 error");
+	});
+
 	it("I3: emits a 'sync errors' warning when result.errors > 0", async () => {
 		vi.mocked(syncBundledAgents).mockReturnValueOnce({
 			...emptySync,
@@ -191,14 +254,14 @@ describe("G0: session_start → real syncBundledAgents → notifyAgentSyncDrift"
 
 	it("on a fresh tmp cwd, copies bundled agents and emits a single 'Copied N agents' info", async () => {
 		const real = await vi.importActual<typeof import("./agents.js")>("./agents.js");
-		vi.mocked(syncBundledAgents).mockImplementationOnce((cwd, apply) => real.syncBundledAgents(cwd, apply));
+		vi.mocked(syncBundledAgents).mockImplementationOnce((apply) => real.syncBundledAgents(apply));
 
 		const { pi, captured } = createMockPi({ exec: stubGitExec({}) as never });
 		registerSessionHooks(pi);
 		const ctx = createMockCtx({ cwd: projectDir, hasUI: true });
 		await captured.events.get("session_start")?.[0]({ reason: "startup" } as never, ctx as never);
 
-		const agentsDir = join(projectDir, ".pi", "agents");
+		const agentsDir = join(homedir(), ".pi", "agent", "agents");
 		expect(existsSync(agentsDir)).toBe(true);
 		expect(existsSync(join(agentsDir, ".rpiv-managed.json"))).toBe(true);
 		expect(existsSync(join(agentsDir, ".rpiv-managed.v2"))).toBe(true);
@@ -216,7 +279,7 @@ describe("G0: session_start → real syncBundledAgents → notifyAgentSyncDrift"
 
 	it("on a second cold-start, reports unchanged (no Copied / no Synced / no drift)", async () => {
 		const real = await vi.importActual<typeof import("./agents.js")>("./agents.js");
-		vi.mocked(syncBundledAgents).mockImplementation((cwd, apply) => real.syncBundledAgents(cwd, apply));
+		vi.mocked(syncBundledAgents).mockImplementation((apply) => real.syncBundledAgents(apply));
 
 		const { pi, captured } = createMockPi({ exec: stubGitExec({}) as never });
 		registerSessionHooks(pi);

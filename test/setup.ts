@@ -92,4 +92,10 @@ beforeEach(async () => {
 	rmSync(todoConfig, { force: true });
 	rmSync(askUserQuestionConfig, { force: true });
 	rmSync(webToolsConfig, { force: true });
+
+	// Clean global agent dir parent (`~/.pi/agent/`) — not just `~/.pi/agent/agents/` —
+	// so Q18-style tests that place a regular file at `~/.pi/agent` can write into a
+	// clean slot, and so no test inherits an empty-dir residue from a prior worker run.
+	const globalAgentDir = join(process.env.HOME!, ".pi", "agent");
+	rmSync(globalAgentDir, { recursive: true, force: true });
 });

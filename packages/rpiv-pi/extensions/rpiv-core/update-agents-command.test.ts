@@ -11,13 +11,18 @@ vi.mock("./agents.js", () => ({
 		MKDIR: "mkdir",
 	},
 	syncBundledAgents: vi.fn(),
+	cleanupPerCwdAgents: vi.fn(),
 }));
 
-import { SYNC_OP, syncBundledAgents } from "./agents.js";
+import { cleanupPerCwdAgents, SYNC_OP, syncBundledAgents } from "./agents.js";
 import { registerUpdateAgentsCommand } from "./update-agents-command.js";
+
+const emptyCleanup = () => ({ cleanedUp: [], skipped: [], errors: [] });
 
 beforeEach(() => {
 	vi.mocked(syncBundledAgents).mockReset();
+	vi.mocked(cleanupPerCwdAgents).mockReset();
+	vi.mocked(cleanupPerCwdAgents).mockReturnValue(emptyCleanup());
 });
 
 const empty = (overrides: Partial<ReturnType<typeof syncBundledAgents>> = {}) => ({

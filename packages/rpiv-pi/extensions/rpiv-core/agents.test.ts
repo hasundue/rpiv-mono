@@ -10,10 +10,18 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BUNDLED_AGENTS_DIR, isSafeDestructiveOp, SYNC_OP, syncBundledAgents } from "./agents.js";
+import {
+	BUNDLED_AGENTS_DIR,
+	CLEANUP_SKIP_REASON,
+	cleanupPerCwdAgents,
+	isSafeDestructiveOp,
+	SYNC_OP,
+	summarizeCleanupSkips,
+	syncBundledAgents,
+} from "./agents.js";
 
 const sha256 = (s: string | Buffer) => createHash("sha256").update(s).digest("hex");
 
@@ -27,12 +35,15 @@ let markerPath: string;
 
 beforeEach(() => {
 	cwd = mkdtempSync(join(tmpdir(), "rpiv-agents-"));
-	targetDir = join(cwd, ".pi", "agents");
+	targetDir = join(homedir(), ".pi", "agent", "agents");
 	manifestPath = join(targetDir, ".rpiv-managed.json");
 	markerPath = join(targetDir, ".rpiv-managed.v2");
 });
 afterEach(() => {
 	rmSync(cwd, { recursive: true, force: true });
+	// Remove the `agent/` parent — not just `agent/agents/` — so Q18's writeFileSync
+	// (which needs the `agent` slot empty) and cross-test isolation both hold.
+	rmSync(join(homedir(), ".pi", "agent"), { recursive: true, force: true });
 	vi.restoreAllMocks();
 });
 
@@ -42,7 +53,7 @@ afterEach(() => {
 
 describe("syncBundledAgents — first-run (no manifest, empty target)", () => {
 	it("copies every source .md and writes a v2 manifest with sha256 hashes", () => {
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 		const bundled = bundledNames();
 		expect(r.added.sort()).toEqual(bundled.sort());
 		expect(r.updated).toEqual([]);
@@ -60,7 +71,7 @@ describe("syncBundledAgents — first-run (no manifest, empty target)", () => {
 	});
 
 	it("writes the .rpiv-managed.v2 sentinel marker after first successful sync", () => {
-		syncBundledAgents(cwd, false);
+		syncBundledAgents(false);
 		expect(existsSync(markerPath)).toBe(true);
 		expect(readFileSync(markerPath, "utf-8")).toBe("");
 	});
@@ -79,7 +90,7 @@ describe("syncBundledAgents — legacy v1 manifest one-shot migration", () => {
 		writeFileSync(join(targetDir, target), bundledContent(target), "utf-8");
 		writeFileSync(manifestPath, JSON.stringify([target]), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.unchanged).toContain(target);
 		expect(r.updated).not.toContain(target);
@@ -96,7 +107,7 @@ describe("syncBundledAgents — legacy v1 manifest one-shot migration", () => {
 		writeFileSync(join(targetDir, target), "user-edited content", "utf-8");
 		writeFileSync(manifestPath, JSON.stringify([target]), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.updated).toContain(target);
 		expect(r.pendingUpdate).not.toContain(target);
@@ -115,7 +126,7 @@ describe("syncBundledAgents — legacy v1 manifest one-shot migration", () => {
 		for (const name of legacyEntries) writeFileSync(join(targetDir, name), bundledContent(name), "utf-8");
 		writeFileSync(manifestPath, JSON.stringify(legacyEntries), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.added).toContain(target);
 		expect(existsSync(join(targetDir, target))).toBe(true);
@@ -126,7 +137,7 @@ describe("syncBundledAgents — legacy v1 manifest one-shot migration", () => {
 		writeFileSync(join(targetDir, "stale.md"), "old shipped content", "utf-8");
 		writeFileSync(manifestPath, JSON.stringify(["stale.md"]), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.removed).toContain("stale.md");
 		expect(r.pendingRemove).not.toContain("stale.md");
@@ -138,7 +149,7 @@ describe("syncBundledAgents — legacy v1 manifest one-shot migration", () => {
 		writeFileSync(join(targetDir, "stale.md"), "user-edited stale content", "utf-8");
 		writeFileSync(manifestPath, JSON.stringify(["stale.md"]), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.removed).toContain("stale.md");
 		expect(existsSync(join(targetDir, "stale.md"))).toBe(false);
@@ -149,7 +160,7 @@ describe("syncBundledAgents — legacy v1 manifest one-shot migration", () => {
 		writeFileSync(join(targetDir, "unrelated.md"), "stale", "utf-8");
 		writeFileSync(manifestPath, JSON.stringify([42, null, "unrelated.md"]), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.errors).toEqual([]);
 		expect(r.removed).toContain("unrelated.md");
@@ -162,7 +173,7 @@ describe("syncBundledAgents — legacy v1 manifest one-shot migration", () => {
 		for (const name of bundled) writeFileSync(join(targetDir, name), "stale legacy content", "utf-8");
 		writeFileSync(manifestPath, JSON.stringify(bundled), "utf-8");
 
-		syncBundledAgents(cwd, false);
+		syncBundledAgents(false);
 
 		const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
 		expect(Array.isArray(manifest)).toBe(false);
@@ -180,14 +191,14 @@ describe("syncBundledAgents — legacy v1 manifest one-shot migration", () => {
 		mkdirSync(targetDir, { recursive: true });
 		writeFileSync(join(targetDir, target), "pre-migration drift", "utf-8");
 		writeFileSync(manifestPath, JSON.stringify([target]), "utf-8");
-		syncBundledAgents(cwd, false);
+		syncBundledAgents(false);
 		// First successful sync commits the v2 marker (one-shot per project).
 		expect(existsSync(markerPath)).toBe(true);
 
 		// User edits AFTER migration
 		writeFileSync(join(targetDir, target), "user customization", "utf-8");
 
-		const r2 = syncBundledAgents(cwd, false);
+		const r2 = syncBundledAgents(false);
 
 		expect(r2.pendingUpdate).toContain(target);
 		expect(r2.updated).not.toContain(target);
@@ -207,7 +218,7 @@ describe("syncBundledAgents — missing/corrupt manifest", () => {
 		const target = bundled[0];
 		writeFileSync(join(targetDir, target), bundledContent(target), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.unchanged).toContain(target);
 		expect(r.added).not.toContain(target);
@@ -222,7 +233,7 @@ describe("syncBundledAgents — missing/corrupt manifest", () => {
 		const target = bundled[0];
 		writeFileSync(join(targetDir, target), "drift content", "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.updated).toContain(target);
 		expect(readFileSync(join(targetDir, target), "utf-8")).toBe(bundledContent(target));
@@ -236,7 +247,7 @@ describe("syncBundledAgents — missing/corrupt manifest", () => {
 		writeFileSync(join(targetDir, bundled[0]), "drift", "utf-8");
 		expect(existsSync(markerPath)).toBe(false);
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.errors).toEqual([]);
 		expect(r.updated).toContain(bundled[0]);
@@ -254,7 +265,7 @@ describe("syncBundledAgents — missing/corrupt manifest", () => {
 		writeFileSync(manifestPath, JSON.stringify(42), "utf-8");
 		writeFileSync(join(targetDir, bundled[0]), "drift", "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.errors).toEqual([]);
 		expect(r.updated).toContain(bundled[0]);
@@ -277,7 +288,7 @@ describe("syncBundledAgents — v2 manifest smart gate (apply=false)", () => {
 		// v2 manifest: hash matches what we just wrote, so "user hasn't edited"
 		writeFileSync(manifestPath, JSON.stringify({ [target]: sha256(oldContent) }), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.updated).toContain(target);
 		expect(r.pendingUpdate).not.toContain(target);
@@ -295,7 +306,7 @@ describe("syncBundledAgents — v2 manifest smart gate (apply=false)", () => {
 		writeFileSync(join(targetDir, target), "user edits", "utf-8");
 		writeFileSync(manifestPath, JSON.stringify({ [target]: sha256("shipped version") }), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.pendingUpdate).toContain(target);
 		expect(r.updated).not.toContain(target);
@@ -307,7 +318,7 @@ describe("syncBundledAgents — v2 manifest smart gate (apply=false)", () => {
 		writeFileSync(join(targetDir, "removed.md"), "old removed agent", "utf-8");
 		writeFileSync(manifestPath, JSON.stringify({ "removed.md": sha256("old removed agent") }), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.removed).toContain("removed.md");
 		expect(existsSync(join(targetDir, "removed.md"))).toBe(false);
@@ -318,7 +329,7 @@ describe("syncBundledAgents — v2 manifest smart gate (apply=false)", () => {
 		writeFileSync(join(targetDir, "removed.md"), "user added notes", "utf-8");
 		writeFileSync(manifestPath, JSON.stringify({ "removed.md": sha256("shipped") }), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.pendingRemove).toContain("removed.md");
 		expect(r.removed).not.toContain("removed.md");
@@ -326,19 +337,19 @@ describe("syncBundledAgents — v2 manifest smart gate (apply=false)", () => {
 	});
 
 	it("treats a manually-removed dest as a new add on next sync", () => {
-		syncBundledAgents(cwd, true);
+		syncBundledAgents(true);
 		const bundled = bundledNames();
 		if (bundled.length === 0) return;
 		rmSync(join(targetDir, bundled[0]));
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.added).toContain(bundled[0]);
 	});
 
 	it("reports unchanged on a quiescent second sync", () => {
-		syncBundledAgents(cwd, true);
-		const r = syncBundledAgents(cwd, false);
+		syncBundledAgents(true);
+		const r = syncBundledAgents(false);
 		expect(r.added).toEqual([]);
 		expect(r.updated).toEqual([]);
 		expect(r.pendingUpdate).toEqual([]);
@@ -352,11 +363,11 @@ describe("syncBundledAgents — v2 manifest smart gate (apply=false)", () => {
 
 describe("syncBundledAgents — custom user agents (v2 manifest active)", () => {
 	it("ignores a custom user .md whose name does NOT match any bundled agent", () => {
-		syncBundledAgents(cwd, true);
+		syncBundledAgents(true);
 		const customPath = join(targetDir, "my-custom-agent.md");
 		writeFileSync(customPath, "user content", "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.removed).not.toContain("my-custom-agent.md");
 		expect(r.pendingRemove).not.toContain("my-custom-agent.md");
@@ -382,7 +393,7 @@ describe("syncBundledAgents — custom user agents (v2 manifest active)", () => 
 		// User's hand-placed file happens to match canonical content
 		writeFileSync(join(targetDir, target), bundledContent(target), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.unchanged).toContain(target);
 		const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
@@ -406,7 +417,7 @@ describe("syncBundledAgents — custom user agents (v2 manifest active)", () => 
 		// User's hand-placed file diverges from canonical
 		writeFileSync(join(targetDir, target), "user wrote this", "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		// hasV2Data=true (marker present) → unknown entry is gated
 		expect(r.pendingUpdate).toContain(target);
@@ -423,11 +434,11 @@ describe("syncBundledAgents — apply=true (forced sync)", () => {
 	it("overwrites a user-edited file even with v2 gate in place", () => {
 		const bundled = bundledNames();
 		if (bundled.length === 0) return;
-		syncBundledAgents(cwd, true);
+		syncBundledAgents(true);
 		const target = bundled[0];
 		writeFileSync(join(targetDir, target), "user-modified", "utf-8");
 
-		const r = syncBundledAgents(cwd, true);
+		const r = syncBundledAgents(true);
 
 		expect(r.updated).toContain(target);
 		expect(readFileSync(join(targetDir, target), "utf-8")).toBe(bundledContent(target));
@@ -438,20 +449,20 @@ describe("syncBundledAgents — apply=true (forced sync)", () => {
 		writeFileSync(join(targetDir, "stale.md"), "user-edited stale", "utf-8");
 		writeFileSync(manifestPath, JSON.stringify({ "stale.md": sha256("originally shipped content") }), "utf-8");
 
-		const r = syncBundledAgents(cwd, true);
+		const r = syncBundledAgents(true);
 
 		expect(r.removed).toContain("stale.md");
 		expect(existsSync(join(targetDir, "stale.md"))).toBe(false);
 	});
 
 	it("baselines real hashes from a v1 manifest (after-upgrade sync)", () => {
-		syncBundledAgents(cwd, true);
+		syncBundledAgents(true);
 		const bundled = bundledNames();
 		if (bundled.length === 0) return;
 		// Roll back manifest to v1 form to simulate upgrade-then-/rpiv-update-agents
 		writeFileSync(manifestPath, JSON.stringify(bundled), "utf-8");
 
-		syncBundledAgents(cwd, true);
+		syncBundledAgents(true);
 
 		const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
 		expect(Array.isArray(manifest)).toBe(false);
@@ -461,8 +472,8 @@ describe("syncBundledAgents — apply=true (forced sync)", () => {
 	});
 
 	it("leaves unchanged files alone", () => {
-		syncBundledAgents(cwd, true);
-		const r = syncBundledAgents(cwd, true);
+		syncBundledAgents(true);
+		const r = syncBundledAgents(true);
 		expect(r.updated).toEqual([]);
 		expect(r.unchanged.length).toBeGreaterThan(0);
 	});
@@ -486,7 +497,7 @@ describe("syncBundledAgents — manifest robustness", () => {
 		);
 		writeFileSync(join(targetDir, target), bundledContent(target), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.errors).toEqual([]);
 		const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
@@ -506,7 +517,7 @@ describe("syncBundledAgents — manifest robustness", () => {
 		writeFileSync(join(targetDir, a), bundledContent(a), "utf-8");
 		writeFileSync(join(targetDir, b), "user-edited content", "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.pendingUpdate).toContain(b);
 		expect(r.updated).not.toContain(b);
@@ -522,14 +533,14 @@ describe("syncBundledAgents — I1: v2 sentinel marker", () => {
 	it("with marker present and corrupt JSON manifest, gates user edits as pendingUpdate", () => {
 		const bundled = bundledNames();
 		if (bundled.length === 0) return;
-		syncBundledAgents(cwd, false); // first sync — writes marker
+		syncBundledAgents(false); // first sync — writes marker
 		expect(existsSync(markerPath)).toBe(true);
 
 		const target = bundled[0];
 		writeFileSync(join(targetDir, target), "user customization", "utf-8");
 		writeFileSync(manifestPath, "{ corrupt :: not json", "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.updated).not.toContain(target);
 		expect(r.pendingUpdate).toContain(target);
@@ -539,7 +550,7 @@ describe("syncBundledAgents — I1: v2 sentinel marker", () => {
 	it("with marker present and all-empty-hash manifest, gates user edits as pendingUpdate", () => {
 		const bundled = bundledNames();
 		if (bundled.length === 0) return;
-		syncBundledAgents(cwd, false);
+		syncBundledAgents(false);
 
 		const target = bundled[0];
 		writeFileSync(join(targetDir, target), "user customization", "utf-8");
@@ -547,7 +558,7 @@ describe("syncBundledAgents — I1: v2 sentinel marker", () => {
 		for (const name of bundled) empty[name] = "";
 		writeFileSync(manifestPath, JSON.stringify(empty), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.updated).not.toContain(target);
 		expect(r.pendingUpdate).toContain(target);
@@ -562,12 +573,12 @@ describe("syncBundledAgents — I1: v2 sentinel marker", () => {
 		writeFileSync(join(targetDir, target), "drift", "utf-8");
 		expect(existsSync(markerPath)).toBe(false);
 
-		const r1 = syncBundledAgents(cwd, false);
+		const r1 = syncBundledAgents(false);
 		expect(r1.updated).toContain(target);
 		expect(existsSync(markerPath)).toBe(true);
 
 		writeFileSync(join(targetDir, target), "post-migration user edit", "utf-8");
-		const r2 = syncBundledAgents(cwd, false);
+		const r2 = syncBundledAgents(false);
 		expect(r2.updated).not.toContain(target);
 		expect(r2.pendingUpdate).toContain(target);
 	});
@@ -584,7 +595,7 @@ describe("syncBundledAgents — I2: path-traversal hardening", () => {
 		writeFileSync(sentinel, "DO NOT DELETE", "utf-8");
 		writeFileSync(manifestPath, JSON.stringify({ "../../sentinel.md": "" }), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(existsSync(sentinel)).toBe(true);
 		expect(r.removed).not.toContain("../../sentinel.md");
@@ -597,7 +608,7 @@ describe("syncBundledAgents — I2: path-traversal hardening", () => {
 		writeFileSync(sentinel, "absolute target", "utf-8");
 		writeFileSync(manifestPath, JSON.stringify({ [sentinel]: "" }), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(existsSync(sentinel)).toBe(true);
 		expect(r.removed.length).toBe(0);
@@ -608,7 +619,7 @@ describe("syncBundledAgents — I2: path-traversal hardening", () => {
 		writeFileSync(join(targetDir, "weird.txt"), "not an agent", "utf-8");
 		writeFileSync(manifestPath, JSON.stringify({ "weird.txt": "" }), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.removed).not.toContain("weird.txt");
 		expect(existsSync(join(targetDir, "weird.txt"))).toBe(true);
@@ -620,7 +631,7 @@ describe("syncBundledAgents — I2: path-traversal hardening", () => {
 		writeFileSync(sentinel, "v1 target", "utf-8");
 		writeFileSync(manifestPath, JSON.stringify(["../../v1-sentinel.md"]), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(existsSync(sentinel)).toBe(true);
 		expect(r.removed).not.toContain("../../v1-sentinel.md");
@@ -628,12 +639,13 @@ describe("syncBundledAgents — I2: path-traversal hardening", () => {
 
 	it("ignores manifest keys containing a NUL byte", () => {
 		mkdirSync(targetDir, { recursive: true });
-		writeFileSync(manifestPath, JSON.stringify({ "evil\u0000.md": "" }), "utf-8");
+		const nulKey = `evil${String.fromCharCode(0)}.md`;
+		writeFileSync(manifestPath, JSON.stringify({ [nulKey]: "" }), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.errors).toEqual([]);
-		expect(r.removed).not.toContain("evil\u0000.md");
+		expect(r.removed).not.toContain(nulKey);
 	});
 });
 
@@ -644,7 +656,7 @@ describe("syncBundledAgents — error paths", () => {
 		mkdirSync(targetDir, { recursive: true });
 		chmodSync(targetDir, 0o500);
 		try {
-			const r = syncBundledAgents(cwd, false);
+			const r = syncBundledAgents(false);
 			const errorTripped = r.errors.some((e) => e.op === SYNC_OP.COPY) || r.added.length < bundled.length;
 			expect(errorTripped).toBe(true);
 		} finally {
@@ -658,7 +670,7 @@ describe("syncBundledAgents — error paths", () => {
 		mkdirSync(targetDir, { recursive: true });
 		writeFileSync(manifestPath, JSON.stringify({ "stale.md": sha256("x") }), "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.errors).toEqual([]);
 		expect(r.removed).toContain("stale.md");
@@ -668,35 +680,39 @@ describe("syncBundledAgents — error paths", () => {
 	});
 
 	it.skipIf(process.platform === "win32")("Q9: writeManifest failure surfaces op:'manifest-write' SyncError", () => {
-		// Plan called for chmod(targetDir, 0o500), but POSIX dir-without-write still
-		// permits writes to existing files inside, so writeManifest would not fail.
-		// Read-only the manifest file itself to deterministically trigger EACCES on
-		// the writeManifest open(O_WRONLY|O_TRUNC|O_CREAT).
-		syncBundledAgents(cwd, true);
+		// Q9: make the targetDir read-only so writeFileSync(tmpFile) fails (not just renameSync).
+		// Atomic write writes a NEW .tmp file then renames — chmod-ing the manifest file
+		// is insufficient because renameSync only needs directory write perms.
+		syncBundledAgents(true);
 		const bundled = bundledNames();
 		if (bundled.length === 0) return;
 		writeFileSync(join(targetDir, bundled[0]), "drift", "utf-8");
-		chmodSync(manifestPath, 0o400);
+		chmodSync(targetDir, 0o500);
 
 		try {
-			const r = syncBundledAgents(cwd, true);
+			const r = syncBundledAgents(true);
 			expect(r.errors.some((e) => e.op === SYNC_OP.MANIFEST_WRITE)).toBe(true);
 		} finally {
-			chmodSync(manifestPath, 0o600);
+			chmodSync(targetDir, 0o700);
 		}
 	});
 
 	it("Q18: mkdir failure tagged op:'mkdir' (not op:'manifest-write')", () => {
-		// Plan called for vi.spyOn(fs, "mkdirSync"), but ESM module namespaces are
-		// not configurable under this Vitest config. Inject the failure by placing
-		// a regular file at `<cwd>/.pi` so mkdirSync(<cwd>/.pi/agents, {recursive:true})
-		// fails with ENOTDIR — same observable: an op:"mkdir" SyncError.
-		writeFileSync(join(cwd, ".pi"), "not a dir", "utf-8");
+		// Reset pre-state: parent must exist as a dir; the agent slot must NOT exist
+		// (other tests may have left it as an empty dir via mkdirSync(recursive)).
+		mkdirSync(join(homedir(), ".pi"), { recursive: true });
+		rmSync(join(homedir(), ".pi", "agent"), { recursive: true, force: true });
+		// Block the global agents dir path by placing a file where the dir should go
+		writeFileSync(join(homedir(), ".pi", "agent"), "not a dir", "utf-8");
 
-		const r = syncBundledAgents(cwd, false);
+		try {
+			const r = syncBundledAgents(false);
 
-		expect(r.errors.some((e) => e.op === SYNC_OP.MKDIR)).toBe(true);
-		expect(r.errors.some((e) => e.op === SYNC_OP.MANIFEST_WRITE)).toBe(false);
+			expect(r.errors.some((e) => e.op === SYNC_OP.MKDIR)).toBe(true);
+			expect(r.errors.some((e) => e.op === SYNC_OP.MANIFEST_WRITE)).toBe(false);
+		} finally {
+			rmSync(join(homedir(), ".pi", "agent"), { force: true });
+		}
 	});
 
 	it("Q5: pushes to result.removed when a tracked file has already vanished from disk (v2 active)", () => {
@@ -705,7 +721,7 @@ describe("syncBundledAgents — error paths", () => {
 		writeFileSync(markerPath, "", "utf-8");
 		// Note: 'stale.md' is NOT created on disk — it has vanished while still tracked.
 
-		const r = syncBundledAgents(cwd, false);
+		const r = syncBundledAgents(false);
 
 		expect(r.removed).toContain("stale.md");
 		expect(r.errors).toEqual([]);
@@ -722,7 +738,7 @@ describe("syncBundledAgents — error paths", () => {
 			// readFileSync(src) throws EACCES; restore in finally.
 			const bundled = bundledNames();
 			if (bundled.length === 0) return;
-			syncBundledAgents(cwd, false);
+			syncBundledAgents(false);
 			const target = bundled[0];
 			const baselined = JSON.parse(readFileSync(manifestPath, "utf-8"));
 			const priorHash = baselined[target];
@@ -732,7 +748,7 @@ describe("syncBundledAgents — error paths", () => {
 			const originalMode = statSync(srcPath).mode & 0o777;
 			chmodSync(srcPath, 0o000);
 			try {
-				const r = syncBundledAgents(cwd, false);
+				const r = syncBundledAgents(false);
 				expect(r.errors.some((e) => e.op === SYNC_OP.READ_SRC && e.file === target)).toBe(true);
 				expect(r.pendingUpdate).not.toContain(target);
 				const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
@@ -752,11 +768,119 @@ describe("syncBundledAgents — error paths", () => {
 		chmodSync(stalePath, 0o000);
 
 		try {
-			const r = syncBundledAgents(cwd, false);
+			const r = syncBundledAgents(false);
 			expect(r.errors.some((e) => e.op === SYNC_OP.READ_DEST && e.file === "stale.md")).toBe(true);
 		} finally {
 			chmodSync(stalePath, 0o600);
 		}
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// cleanupPerCwdAgents — conservative all-or-nothing migration helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("cleanupPerCwdAgents — conservative all-or-nothing cleanup", () => {
+	let perCwdAgentsDir: string;
+	let perCwdManifest: string;
+
+	beforeEach(() => {
+		perCwdAgentsDir = join(cwd, ".pi", "agents");
+		perCwdManifest = join(perCwdAgentsDir, ".rpiv-managed.json");
+	});
+
+	it("returns empty when no .pi/agents/ directory exists", () => {
+		const r = cleanupPerCwdAgents(cwd);
+		expect(r.cleanedUp).toEqual([]);
+		expect(r.skipped).toEqual([]);
+		expect(r.errors).toEqual([]);
+	});
+
+	it("skips with reason=unmanaged when manifest is missing (hand-managed directory)", () => {
+		mkdirSync(perCwdAgentsDir, { recursive: true });
+		writeFileSync(join(perCwdAgentsDir, "custom.md"), "user content", "utf-8");
+
+		const r = cleanupPerCwdAgents(cwd);
+
+		expect(r.skipped.length).toBe(1);
+		expect(r.skipped[0].reason).toBe(CLEANUP_SKIP_REASON.UNMANAGED);
+		expect(existsSync(perCwdAgentsDir)).toBe(true);
+	});
+
+	it("skips with reason=diverged when a managed file is user-edited", () => {
+		const bundled = bundledNames();
+		if (bundled.length === 0) return;
+		mkdirSync(perCwdAgentsDir, { recursive: true });
+		const manifest: Record<string, string> = {};
+		for (const name of bundled) {
+			writeFileSync(join(perCwdAgentsDir, name), "user edited", "utf-8");
+			manifest[name] = sha256("user edited");
+		}
+		writeFileSync(perCwdManifest, JSON.stringify(manifest), "utf-8");
+
+		const r = cleanupPerCwdAgents(cwd);
+
+		expect(r.skipped.length).toBe(1);
+		expect(r.skipped[0].reason).toBe(CLEANUP_SKIP_REASON.DIVERGED);
+		expect(existsSync(perCwdAgentsDir)).toBe(true);
+	});
+
+	it("skips with reason=custom-files when non-managed files exist alongside matching managed files", () => {
+		const bundled = bundledNames();
+		if (bundled.length === 0) return;
+		mkdirSync(perCwdAgentsDir, { recursive: true });
+		const manifest: Record<string, string> = {};
+		for (const name of bundled) {
+			writeFileSync(join(perCwdAgentsDir, name), bundledContent(name), "utf-8");
+			manifest[name] = sha256(bundledContent(name));
+		}
+		writeFileSync(join(perCwdAgentsDir, "my-custom.md"), "user content", "utf-8");
+		writeFileSync(perCwdManifest, JSON.stringify(manifest), "utf-8");
+
+		const r = cleanupPerCwdAgents(cwd);
+
+		expect(r.skipped.length).toBe(1);
+		expect(r.skipped[0].reason).toBe(CLEANUP_SKIP_REASON.CUSTOM_FILES);
+		expect(existsSync(perCwdAgentsDir)).toBe(true);
+		expect(existsSync(join(perCwdAgentsDir, "my-custom.md"))).toBe(true);
+	});
+
+	describe("summarizeCleanupSkips", () => {
+		it("returns empty string for no skips", () => {
+			expect(summarizeCleanupSkips([])).toBe("");
+		});
+
+		it("formats a single reason", () => {
+			expect(summarizeCleanupSkips([{ dir: "/a", reason: CLEANUP_SKIP_REASON.DIVERGED }])).toBe("1 with user edits");
+		});
+
+		it("aggregates and orders reasons (unmanaged, diverged, custom-files)", () => {
+			const skips = [
+				{ dir: "/a", reason: CLEANUP_SKIP_REASON.DIVERGED },
+				{ dir: "/b", reason: CLEANUP_SKIP_REASON.UNMANAGED },
+				{ dir: "/c", reason: CLEANUP_SKIP_REASON.CUSTOM_FILES },
+				{ dir: "/d", reason: CLEANUP_SKIP_REASON.DIVERGED },
+			];
+			expect(summarizeCleanupSkips(skips)).toBe("1 unmanaged, 2 with user edits, 1 with custom files");
+		});
+	});
+
+	it("removes directory when all managed files match source and no extras", () => {
+		const bundled = bundledNames();
+		if (bundled.length === 0) return;
+		mkdirSync(perCwdAgentsDir, { recursive: true });
+		const manifest: Record<string, string> = {};
+		for (const name of bundled) {
+			writeFileSync(join(perCwdAgentsDir, name), bundledContent(name), "utf-8");
+			manifest[name] = sha256(bundledContent(name));
+		}
+		writeFileSync(perCwdManifest, JSON.stringify(manifest), "utf-8");
+
+		const r = cleanupPerCwdAgents(cwd);
+
+		expect(r.cleanedUp.length).toBe(1);
+		expect(r.skipped).toEqual([]);
+		expect(existsSync(perCwdAgentsDir)).toBe(false);
 	});
 });
 
