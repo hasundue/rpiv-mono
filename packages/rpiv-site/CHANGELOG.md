@@ -7,6 +7,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Update marketing-site infographic to reflect six-provider web search support.
+
 ## [1.7.0] - 2026-05-15
 
 ### Added

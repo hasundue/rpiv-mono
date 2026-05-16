@@ -7,6 +7,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Update README to document the multi-provider web search architecture.
+- Bundled `web-search-researcher` agent no longer runs isolated, so it can share context with the calling session.
+
 ## [1.7.0] - 2026-05-15
 
 ### Changed

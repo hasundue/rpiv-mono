@@ -7,6 +7,18 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Multi-provider web search with support for Tavily, Exa, Jina, and Firecrawl alongside Brave and Serper.
+- `/web-search-config` shows the active provider first with a ✓ marker, marks configured providers, and preserves existing API keys on empty input.
+
+### Changed
+- Update README and npm metadata to document the six-provider search architecture.
+
+### Fixed
+- `/web-search-config` notifications and input titles now display clean provider labels.
+- Reject loopback and private-network URLs to prevent SSRF via Brave/Serper raw fetch.
+- Handle empty response bodies from Jina fetch correctly.
+
 ## [1.7.0] - 2026-05-15
 
 ## [1.6.1] - 2026-05-14
