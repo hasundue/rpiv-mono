@@ -1,16 +1,21 @@
 {
   "name": "@juicesharp/rpiv-web-tools",
   "version": "1.7.0",
-  "description": "Pi extension. Web search and fetch for the model, backed by configurable search providers.",
+  "description": "Pi extension. Web search and fetch for the model with pluggable providers (Brave, Tavily, Serper, Exa, Jina, Firecrawl).",
   "keywords": [
     "pi-package",
     "pi-extension",
     "rpiv",
     "web-search",
+    "search",
+    "fetch",
+    "scrape",
     "brave",
     "tavily",
     "serper",
-    "exa"
+    "exa",
+    "jina",
+    "firecrawl"
   ],
   "type": "module",
   "license": "MIT",

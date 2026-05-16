@@ -11,16 +11,18 @@
 [![npm version](https://img.shields.io/npm/v/@juicesharp/rpiv-web-tools.svg)](https://www.npmjs.com/package/@juicesharp/rpiv-web-tools)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Let the model search the web and read pages. `rpiv-web-tools` adds `web_search` and `web_fetch` tools to [Pi Agent](https://github.com/badlogic/pi-mono), backed by the Brave Search API, plus `/web-search-config` for interactive API-key setup.
+Let the model search the web and read pages. `rpiv-web-tools` adds `web_search` and `web_fetch` tools to [Pi Agent](https://github.com/badlogic/pi-mono) with pluggable providers (Brave, Tavily, Serper, Exa, Jina, Firecrawl), plus `/web-search-config` for interactive provider selection and API-key setup.
 
-![Brave Search API key prompt](https://raw.githubusercontent.com/juicesharp/rpiv-mono/main/packages/rpiv-web-tools/docs/config.jpg)
+![Provider selection prompt](https://raw.githubusercontent.com/juicesharp/rpiv-mono/main/packages/rpiv-web-tools/docs/config.jpg)
 
 ## Features
 
-- **Brave-backed search** - 1–10 ranked results per query with title and snippet.
-- **Read any URL** - fetch http/https pages, strip HTML to text, or get the raw HTML with `raw: true`.
+- **Six pluggable providers** - Brave, Tavily, Serper, Exa, Jina, Firecrawl. Pick one as the active backend; switch any time without losing the others' keys.
+- **Per-provider fetch strategy** - Brave and Serper read the URL directly and strip HTML to text; Tavily/Exa/Jina/Firecrawl use their native extraction endpoints (markdown for Jina/Firecrawl, plain text for Tavily/Exa).
+- **Read any URL** - fetch http/https pages with HTML-to-text extraction, or get the raw response with `raw: true` (honoured by Brave/Serper; extraction providers always return their parsed text).
 - **Large-page spillover** - oversized responses truncate inline and spill the full body to a temp file the model can read on demand.
-- **Interactive setup** - `/web-search-config` writes the key to `~/.config/rpiv-web-tools/config.json` (chmod 0600); env var `BRAVE_SEARCH_API_KEY` also works.
+- **SSRF guard** - refuses loopback, RFC 1918, link-local, and cloud-metadata addresses (`localhost`, `127.0.0.0/8`, `10.0.0.0/8`, `169.254.0.0/16`, `172.16.0.0/12`, `192.168.0.0/16`, `::1`, `fc00::/7`, `fe80::/10`).
+- **Interactive setup** - `/web-search-config` lists providers (active one first, configured ones marked) and writes to `~/.config/rpiv-web-tools/config.json` (chmod 0600); per-provider env vars also work and take precedence over persisted keys.
 
 ## Install
 
@@ -32,11 +34,11 @@ Then restart your Pi session.
 
 ## Tools
 
-- **`web_search`** - query the Brave Search API and return titled snippets.
+- **`web_search`** - query the active provider's search API and return titled snippets.
   1–10 results per call.
-- **`web_fetch`** - fetch an http/https URL, strip HTML to text (or return raw
-  HTML with `raw: true`), truncate large responses with a temp-file spill for
-  the full content.
+- **`web_fetch`** - fetch an http/https URL through the active provider's content path
+  (raw HTTP+htmlToText for Brave/Serper; native extraction for Tavily/Exa/Jina/Firecrawl),
+  truncate large responses with a temp-file spill for the full content.
 
 ### Schema - `web_search`
 
@@ -54,14 +56,14 @@ Returns:
   content: [{ type: "text", text: string }], // markdown list of "**title**\n url\n snippet"
   details: {
     query: string,
-    backend: "brave",
+    backend: "brave" | "tavily" | "serper" | "exa" | "jina" | "firecrawl",
     resultCount: number,
     results?: Array<{ title: string, url: string, snippet: string }>,
   }
 }
 ```
 
-Throws when `BRAVE_SEARCH_API_KEY` is unset or the Brave API returns a non-2xx response.
+Throws when the active provider's API key is unset (e.g. `EXA_API_KEY is not set`) or the provider's API returns a non-2xx response.
 
 ### Schema - `web_fetch`
 
@@ -88,20 +90,24 @@ Returns:
 }
 ```
 
-Throws on invalid URL, non-http(s) protocol, non-2xx response, or `image/` / `video/` / `audio/` content types.
+Throws on invalid URL, non-http(s) protocol, private/loopback hostnames (SSRF guard), non-2xx response, or `image/` / `video/` / `audio/` content types. Extraction providers (Tavily/Exa/Jina/Firecrawl) additionally throw when the API returns an empty body or a vendor-level failure (e.g. Firecrawl `success: false`, Tavily `failed_results`).
 
 ## Commands
 
-- **`/web-search-config`** - set the Brave API key interactively. Writes to
-  `~/.config/rpiv-web-tools/config.json` (chmod 0600). Pass `--show` to see
-  the current (masked) key and env var status.
+- **`/web-search-config`** - pick the active provider and set its API key interactively.
+  Providers already configured show `(configured)`; the active one is listed first with a `✓`.
+  Pressing Enter on an empty input keeps the existing key for the chosen provider while
+  persisting the provider switch. Pass `--show` to see all per-provider keys (masked) and env var status.
 
-## API key resolution
+## API key resolution (per active provider)
 
 First match wins:
 
-1. `BRAVE_SEARCH_API_KEY` environment variable
-2. `apiKey` field in `~/.config/rpiv-web-tools/config.json`
+1. The active provider's environment variable: `BRAVE_SEARCH_API_KEY`, `TAVILY_API_KEY`, `SERPER_API_KEY`, `EXA_API_KEY`, `JINA_API_KEY`, or `FIRECRAWL_API_KEY`
+2. `apiKeys.<provider>` field in `~/.config/rpiv-web-tools/config.json`
+3. Legacy `apiKey` field (Brave only — auto-migrated to the new shape on next save)
+
+The active provider is `config.provider` (set by `/web-search-config`); falls back to `brave` if absent.
 
 ## Executor guidance overrides
 
@@ -109,10 +115,14 @@ Override the `promptSnippet` / `promptGuidelines` the model sees for each tool b
 
 ```json
 {
-  "apiKey": "sk-...",
+  "provider": "exa",
+  "apiKeys": {
+    "exa": "sk-...",
+    "brave": "sk-..."
+  },
   "guidance": {
     "web_search": {
-      "promptSnippet": "Search Brave for current docs and library versions",
+      "promptSnippet": "Search the web for current docs and library versions",
       "promptGuidelines": [
         "Only call web_search when training-data answers may be stale.",
         "Always include a Sources: section with markdown hyperlinks."
@@ -127,9 +137,11 @@ Override the `promptSnippet` / `promptGuidelines` the model sees for each tool b
 
 Each field is independent: omit one and the built-in default is kept. Invalid values (empty string, wrong type, empty array) silently fall back to defaults. Changes take effect on the next Pi session start.
 
-## Security note: `web_fetch` reach
+## Security note: `web_fetch` host guard
 
-`web_fetch` accepts any http/https URL the model passes, including loopback (`127.0.0.1`, `::1`) and private-range addresses (RFC 1918, link-local, cloud metadata at `169.254.169.254`). This is intentional — local dev servers and intranet docs are common legitimate targets in a single-user CLI. If you run Pi in an untrusted automation context where the model could be steered toward internal services, restrict the tool at the network layer (firewall, egress proxy) or fork to add a host filter; the package ships without one.
+`web_fetch` refuses URLs targeting loopback (`localhost`, `127.0.0.0/8`, `::1`), RFC 1918 private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local (`169.254.0.0/16`, including cloud-metadata at `169.254.169.254`), and IPv6 unique-local / link-local (`fc00::/7`, `fe80::/10`). Attempts surface as `Refusing to fetch private/loopback address: <host>`. This blocks the most common SSRF class — direct-literal targeting of internal services or cloud-metadata endpoints — without preventing legitimate public-web fetches.
+
+The guard is host-literal only; it does NOT resolve DNS or validate redirects. A public hostname that resolves to a private IP, or a public URL that 302-redirects to one, will still reach the target. For untrusted automation environments, layer an egress proxy or firewall on top.
 
 ## License
 

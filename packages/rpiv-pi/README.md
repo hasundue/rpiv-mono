@@ -185,7 +185,7 @@ Invoke via `/skill:<name>` from inside a Pi Agent session.
 | `/btw` | Ask a side question without polluting the main conversation _(requires `@juicesharp/rpiv-btw`, opt-in)_ |
 | `/languages` | Pick the UI language for rpiv-* TUI strings (Deutsch / English / Español / Français / Português / Português (Brasil) / Русский / Українська) |
 | `/todos` | Show current todo list |
-| `/web-search-config` | Set Brave Search API key |
+| `/web-search-config` | Pick the active search provider and set its API key |
 
 ### Agents
 
@@ -220,7 +220,7 @@ Pi Agent discovers extensions via `"extensions": ["./extensions"]` and skills vi
 
 ## Configuration
 
-- **Web search** - run `/web-search-config` to set the Brave Search API key, or set the `BRAVE_SEARCH_API_KEY` environment variable
+- **Web search** - run `/web-search-config` to pick a provider (Brave, Tavily, Serper, Exa, Jina, or Firecrawl) and set its API key; the per-provider env var (e.g. `BRAVE_SEARCH_API_KEY`, `EXA_API_KEY`) also works and takes precedence
 - **Advisor** - run `/advisor` to select a reviewer model and reasoning effort
 - **Side questions** _(opt-in: `pi install npm:@juicesharp/rpiv-btw`)_ - type `/btw <question>` anytime (even mid-stream) to ask the primary model a one-off question; answer appears in a borderless bottom overlay and never enters the main conversation
 - **UI language** - run `/languages` to pick the locale for rpiv-* TUI strings, or pass `pi --locale <code>` at startup. Detection priority: flag → `~/.config/rpiv-i18n/locale.json` → `LANG` / `LC_ALL` → English. LLM-facing copy stays English by design
@@ -240,7 +240,7 @@ Pi Agent discovers extensions via `"extensions": ["./extensions"]` and skills vi
 | Warning about missing siblings on session start | Sibling plugins not installed | Run `/rpiv-setup` |
 | `/rpiv-setup` fails on a package | Network or registry issue | Check connection, retry with `pi install npm:<pkg>`, re-run `/rpiv-setup` |
 | `/rpiv-setup` says "requires interactive mode" | Running in headless mode | Install manually: `pi install npm:<pkg>` for each sibling |
-| `web_search` or `web_fetch` errors | Brave API key not configured | Run `/web-search-config` or set `BRAVE_SEARCH_API_KEY` |
+| `web_search` or `web_fetch` errors | Active provider's API key not configured | Run `/web-search-config` or set the matching env var (e.g. `BRAVE_SEARCH_API_KEY`, `EXA_API_KEY`) |
 | `advisor` tool not available after upgrade | Advisor model selection lost | Run `/advisor` to re-select a model |
 | Skills hang or serialize agent calls | Agent concurrency too low | Open `/agents`, raise `Settings → Max concurrency` |
 
