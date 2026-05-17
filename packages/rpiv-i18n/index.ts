@@ -62,8 +62,9 @@ export default function (pi: ExtensionAPI): void {
 
 			const next = choice === NO_LOCALE_VALUE ? undefined : choice;
 			if (!saveLocaleConfig(next)) {
-				// Don't apply in-memory either — keeps the UI honest. A successful
-				// applyLocale + failed disk write would silently revert at restart.
+				// Honor the documented save-then-apply invariant: a successful
+				// applyLocale followed by a failed disk write would silently
+				// revert at next start with no diagnostic surface.
 				ctx.ui.notify(MSG_PERSIST_FAILED, "error");
 				return;
 			}

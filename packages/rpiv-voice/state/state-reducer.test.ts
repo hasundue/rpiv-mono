@@ -149,19 +149,40 @@ describe("reduce", () => {
 	it("settings_save with all defaults writes an empty config", () => {
 		const s = freshState();
 		const r = reduce(s, { kind: "settings_save" }, ctx);
-		expect(r.effects).toContainEqual({ kind: "save_config", config: {} });
+		expect(r.effects).toContainEqual(expect.objectContaining({ kind: "save_config", config: {} }));
 	});
 
 	it("settings_save persists hallucinationFilterEnabled when user disables it", () => {
 		const s = { ...freshState(), settingsDraft: { hallucinationFilterEnabled: false, equalizerEnabled: false } };
 		const r = reduce(s, { kind: "settings_save" }, ctx);
-		expect(r.effects).toContainEqual({ kind: "save_config", config: { hallucinationFilterEnabled: false } });
+		expect(r.effects).toContainEqual(
+			expect.objectContaining({ kind: "save_config", config: { hallucinationFilterEnabled: false } }),
+		);
 	});
 
 	it("settings_save persists equalizerEnabled when user enables it", () => {
 		const s = { ...freshState(), settingsDraft: { hallucinationFilterEnabled: true, equalizerEnabled: true } };
 		const r = reduce(s, { kind: "settings_save" }, ctx);
-		expect(r.effects).toContainEqual({ kind: "save_config", config: { equalizerEnabled: true } });
+		expect(r.effects).toContainEqual(
+			expect.objectContaining({ kind: "save_config", config: { equalizerEnabled: true } }),
+		);
+	});
+
+	it("settings_save attaches a success message to save_config (no separate notify effect — review I1)", () => {
+		const s = freshState();
+		const r = reduce(s, { kind: "settings_save" }, ctx);
+		// Single save_config effect carries the success copy; no standalone notify
+		// effect — otherwise the loop would emit it unconditionally on save failure.
+		expect(r.effects).toHaveLength(1);
+		expect(r.effects[0]).toMatchObject({ kind: "save_config", successMessage: "Voice settings saved" });
+	});
+
+	it("close_settings emits a save_config WITHOUT a successMessage (silent persist)", () => {
+		const s = { ...freshState(), currentScreen: "settings" as const };
+		const r = reduce(s, { kind: "close_settings" }, ctx);
+		const save = r.effects.find((e) => e.kind === "save_config");
+		expect(save).toBeDefined();
+		expect((save as { successMessage?: string }).successMessage).toBeUndefined();
 	});
 });
 

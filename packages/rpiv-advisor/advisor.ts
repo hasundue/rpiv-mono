@@ -13,9 +13,7 @@
  * via pi.setActiveTools(). Selection is in-memory and resets each session.
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Api, Model, StopReason, Usage } from "@earendil-works/pi-ai";
 import { completeSimple, getSupportedThinkingLevels, type Message, type ThinkingLevel } from "@earendil-works/pi-ai";
@@ -29,6 +27,8 @@ import {
 	type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import type { SelectItem } from "@earendil-works/pi-tui";
+import type { GuidanceFields } from "@juicesharp/rpiv-config";
+import { configPath, loadJsonConfig, saveJsonConfig, validateGuidanceFields } from "@juicesharp/rpiv-config";
 import { Type } from "typebox";
 import { showAdvisorPicker, showEffortPicker } from "./advisor-ui.js";
 
@@ -41,9 +41,7 @@ export const ADVISOR_TOOL_NAME = "advisor";
 const TOOL_LABEL = "Advisor";
 
 // Persistence
-const CONFIG_DIR = join(homedir(), ".config", "rpiv-advisor");
-const ADVISOR_CONFIG_PATH = join(CONFIG_DIR, "advisor.json");
-const CONFIG_FILE_MODE = 0o600;
+const ADVISOR_CONFIG_PATH = configPath("rpiv-advisor", "advisor.json");
 
 // Selector sentinels — double-underscore form is collision-proof against real provider:id keys
 const NO_ADVISOR_VALUE = "__no_advisor__";
@@ -62,6 +60,7 @@ const CHECKMARK = " ✓";
 const MSG_ADVISOR_DISABLED = "Advisor disabled";
 const MSG_REQUIRES_INTERACTIVE = "/advisor requires interactive mode";
 const MSG_ADVISOR_NUDGE = "Please advise on the executor's situation above.";
+const MSG_PERSIST_FAILED = "Failed to save advisor selection — selection not persisted";
 
 // Errors (static)
 const ERR_NO_MODEL = "No advisor model is configured. The user can enable one with the /advisor command.";
@@ -95,11 +94,6 @@ const msgConsulting = (label: string, effort: ThinkingLevel | undefined) =>
 // Config file persistence (cross-session)
 // ---------------------------------------------------------------------------
 
-interface GuidanceFields {
-	promptSnippet?: string;
-	promptGuidelines?: string[];
-}
-
 interface AdvisorConfig {
 	modelKey?: string;
 	effort?: ThinkingLevel;
@@ -108,37 +102,17 @@ interface AdvisorConfig {
 }
 
 export function loadAdvisorConfig(): AdvisorConfig {
-	if (!existsSync(ADVISOR_CONFIG_PATH)) return {};
-	try {
-		return JSON.parse(readFileSync(ADVISOR_CONFIG_PATH, "utf-8")) as AdvisorConfig;
-	} catch {
-		return {};
-	}
+	return loadJsonConfig<AdvisorConfig>(ADVISOR_CONFIG_PATH);
 }
 
-function validateGuidanceFields(fields: unknown): GuidanceFields {
-	if (!fields || typeof fields !== "object") return {};
-	const g = fields as Record<string, unknown>;
-	const result: GuidanceFields = {};
-	if (typeof g.promptSnippet === "string" && g.promptSnippet.length > 0) {
-		result.promptSnippet = g.promptSnippet;
-	}
-	if (
-		Array.isArray(g.promptGuidelines) &&
-		g.promptGuidelines.length > 0 &&
-		g.promptGuidelines.every((s) => typeof s === "string" && s.length > 0)
-	) {
-		result.promptGuidelines = g.promptGuidelines;
-	}
-	return result;
-}
+// validateGuidanceFields is now imported from @juicesharp/rpiv-config
 
 function validateDisabledForModels(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
 	return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
 }
 
-export function saveAdvisorConfig(key: string | undefined, effort: ThinkingLevel | undefined): void {
+export function saveAdvisorConfig(key: string | undefined, effort: ThinkingLevel | undefined): boolean {
 	const existing = loadAdvisorConfig();
 	const config: AdvisorConfig = { ...existing };
 	// Delete (rather than omit) to clear fields that may exist in the spread
@@ -148,17 +122,7 @@ export function saveAdvisorConfig(key: string | undefined, effort: ThinkingLevel
 	else delete config.modelKey;
 	if (effort) config.effort = effort;
 	else delete config.effort;
-	try {
-		mkdirSync(dirname(ADVISOR_CONFIG_PATH), { recursive: true });
-		writeFileSync(ADVISOR_CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
-	} catch {
-		// write may fail on disk-full or permission errors — best effort only
-	}
-	try {
-		chmodSync(ADVISOR_CONFIG_PATH, CONFIG_FILE_MODE);
-	} catch {
-		// chmod may fail on some filesystems — best effort only
-	}
+	return saveJsonConfig(ADVISOR_CONFIG_PATH, config);
 }
 
 function parseModelKey(key: string): { provider: string; modelId: string } | undefined {
@@ -630,9 +594,16 @@ export function registerAdvisorCommand(pi: ExtensionAPI): void {
 			const activeHas = activeTools.includes(ADVISOR_TOOL_NAME);
 
 			if (choice === NO_ADVISOR_VALUE) {
+				// Persist BEFORE applying in-memory state so a save failure can't
+				// leave the model setter and the active-tools registry divergent
+				// (review I2: early-return on failure skipped the tool-list update
+				// and left "model=undefined + tool still registered" stranded).
+				if (!saveAdvisorConfig(undefined, undefined)) {
+					ctx.ui.notify(MSG_PERSIST_FAILED, "error");
+					return;
+				}
 				setAdvisorModel(undefined);
 				setAdvisorEffort(undefined);
-				saveAdvisorConfig(undefined, undefined);
 				if (activeHas) {
 					pi.setActiveTools(activeTools.filter((n) => n !== ADVISOR_TOOL_NAME));
 				}
@@ -668,9 +639,14 @@ export function registerAdvisorCommand(pi: ExtensionAPI): void {
 				effortChoice = effortResult === OFF_VALUE ? undefined : (effortResult as ThinkingLevel);
 			}
 
+			// Persist BEFORE applying in-memory state — same rationale as the
+			// disable branch above (review I2).
+			if (!saveAdvisorConfig(modelKey(picked), effortChoice)) {
+				ctx.ui.notify(MSG_PERSIST_FAILED, "error");
+				return;
+			}
 			setAdvisorEffort(effortChoice);
 			setAdvisorModel(picked);
-			saveAdvisorConfig(modelKey(picked), effortChoice);
 
 			// Re-read after the effort-picker await — the snapshot taken before
 			// `showEffortPicker` is stale once execution yields.

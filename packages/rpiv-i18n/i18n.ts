@@ -20,9 +20,7 @@
  * Config persists at ~/.config/rpiv-i18n/locale.json (chmod 0o600, best-effort writes).
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { configPath, loadJsonConfig, saveJsonConfig } from "@juicesharp/rpiv-config";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -47,9 +45,7 @@ export interface LocaleConfig {
 export const I18N_STATE_KEY = Symbol.for("rpiv-i18n");
 const I18N_RUNTIME_KEY = Symbol.for("rpiv-i18n.runtime");
 
-const CONFIG_DIR = join(homedir(), ".config", "rpiv-i18n");
-const LOCALE_CONFIG_PATH = join(CONFIG_DIR, "locale.json");
-const CONFIG_FILE_MODE = 0o600;
+const LOCALE_CONFIG_PATH = configPath("rpiv-i18n", "locale.json");
 const DEFAULT_FALLBACK_LOCALE = "en";
 
 // Supported locales — alphabetical by code (so the /languages picker stays
@@ -185,37 +181,23 @@ export function getActiveLocale(): string | undefined {
 // ---------------------------------------------------------------------------
 
 export function loadLocaleConfig(): LocaleConfig {
-	if (!existsSync(LOCALE_CONFIG_PATH)) return {};
-	try {
-		return JSON.parse(readFileSync(LOCALE_CONFIG_PATH, "utf-8")) as LocaleConfig;
-	} catch (err) {
-		console.warn(
-			`rpiv-i18n: invalid locale config at ${LOCALE_CONFIG_PATH}, using default (${(err as Error).message})`,
-		);
-		return {};
-	}
+	return loadJsonConfig<LocaleConfig>(LOCALE_CONFIG_PATH);
 }
 
 /**
  * Persist the locale preference. Returns `true` on success, `false` if the
- * write failed (disk full, permissions, etc.) — caller MUST react. The chmod
- * step is best-effort and never affects the return value.
+ * write failed (disk full, EACCES, EROFS, etc.) — caller MUST react. The
+ * `/languages` handler relies on this boolean to honor the documented
+ * save-then-apply invariant: applying in-memory state after a failed write
+ * would silently revert at next start with zero diagnostic surface.
+ *
+ * The chmod step inside `saveJsonConfig` is best-effort and never affects
+ * the return value.
  */
 export function saveLocaleConfig(locale: string | undefined): boolean {
 	const config: LocaleConfig = {};
 	if (locale) config.locale = locale;
-	try {
-		mkdirSync(dirname(LOCALE_CONFIG_PATH), { recursive: true });
-		writeFileSync(LOCALE_CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
-	} catch {
-		return false;
-	}
-	try {
-		chmodSync(LOCALE_CONFIG_PATH, CONFIG_FILE_MODE);
-	} catch {
-		// chmod is non-critical — file persists with default mode
-	}
-	return true;
+	return saveJsonConfig(LOCALE_CONFIG_PATH, config);
 }
 
 // ---------------------------------------------------------------------------

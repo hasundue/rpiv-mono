@@ -66,6 +66,14 @@ describe("saveLocaleConfig", () => {
 		saveLocaleConfig("es");
 		expect(loadLocaleConfig()).toEqual({ locale: "es" });
 	});
+
+	it("returns true on successful write (boolean wired through saveJsonConfig)", () => {
+		// Save contract: boolean return is load-bearing for the /languages handler.
+		// The false-path is covered in rpiv-config's own test suite, where
+		// saveJsonConfig can be exercised against an unwritable path without
+		// disturbing the module-level LOCALE_CONFIG_PATH captured here.
+		expect(saveLocaleConfig("uk")).toBe(true);
+	});
 });
 
 describe("detectLocaleFromConfigAndEnv", () => {

@@ -10,10 +10,12 @@ vi.mock("@earendil-works/pi-tui", async (importOriginal) => {
 	return { ...orig, getKeybindings: () => ({ matches: () => false }) };
 });
 
-// Mock saveVoiceConfig to avoid filesystem writes.
+// Mock saveVoiceConfig to avoid filesystem writes. Default-return `true` to
+// match the real success path; per-test overrides can return `false` to drive
+// the save-failure notify branch.
 vi.mock("../config/voice-config.js", async (importOriginal) => {
 	const orig = await importOriginal<typeof import("../config/voice-config.js")>();
-	return { ...orig, saveVoiceConfig: vi.fn() };
+	return { ...orig, saveVoiceConfig: vi.fn(() => true) };
 });
 
 const theme = makeTheme({
@@ -164,15 +166,29 @@ describe("VoiceSession", () => {
 			expect(deps.setHallucinationFilterEnabled).toHaveBeenCalledWith(false);
 		});
 
-		it("settings_save calls notify and saves config", async () => {
+		it("settings_save on success: persists then emits success notify", async () => {
 			const { saveVoiceConfig } = await import("../config/voice-config.js");
 			const deps = makeDeps();
 			const config = makeSessionConfig(deps);
 			const session = new VoiceSession(config);
 
 			session.dispatchAction({ kind: "settings_save" });
-			expect(deps.notify).toHaveBeenCalled();
 			expect(saveVoiceConfig).toHaveBeenCalled();
+			expect(deps.notify).toHaveBeenCalledWith(expect.stringContaining("Voice settings saved"), "info");
+			expect(deps.notify).not.toHaveBeenCalledWith(expect.stringContaining("Failed to save"), "error");
+		});
+
+		it("settings_save on save failure: emits ONLY error notify, no contradictory success notify (review I1)", async () => {
+			const { saveVoiceConfig } = await import("../config/voice-config.js");
+			(saveVoiceConfig as ReturnType<typeof vi.fn>).mockReturnValueOnce(false);
+			const deps = makeDeps();
+			const config = makeSessionConfig(deps);
+			const session = new VoiceSession(config);
+
+			session.dispatchAction({ kind: "settings_save" });
+
+			expect(deps.notify).toHaveBeenCalledWith(expect.stringContaining("Failed to save"), "error");
+			expect(deps.notify).not.toHaveBeenCalledWith(expect.stringContaining("Voice settings saved"), "info");
 		});
 
 		it("open_settings transitions to settings screen", () => {

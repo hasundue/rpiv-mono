@@ -11,6 +11,7 @@ import { TranscriptView } from "../view/components/transcript-view.js";
 import { OverlayView } from "../view/overlay-view.js";
 import { VoiceOverlayPropsAdapter } from "../view/props-adapter.js";
 import { DictationScreenStrategy, SettingsScreenStrategy } from "../view/screen-content-strategy.js";
+import { t } from "./i18n-bridge.js";
 import { routeKey, type VoiceAction } from "./key-router.js";
 import {
 	selectEqualizerFieldProps,
@@ -158,7 +159,20 @@ export class VoiceSession {
 				this.deps.setHallucinationFilterEnabled(effect.enabled);
 				return;
 			case "save_config":
-				saveVoiceConfig(effect.config);
+				if (saveVoiceConfig(effect.config)) {
+					// Success notify only fires if the reducer asked for one (Ctrl-S
+					// path); the implicit close_settings save omits the message and
+					// stays silent. Conditional fire-on-success keeps the user out
+					// of the contradictory "Failed … / Saved" state the review caught.
+					if (effect.successMessage) {
+						this.deps.notify(effect.successMessage, "info");
+					}
+				} else {
+					this.deps.notify(
+						t("notify.settings_save_failed", "Failed to save voice settings — change not persisted"),
+						"error",
+					);
+				}
 				return;
 			case "done":
 				this.done(effect.result);

@@ -16,7 +16,7 @@ export type Effect =
 	| { kind: "stop_mic" }
 	| { kind: "set_pipeline_paused"; paused: boolean }
 	| { kind: "set_hallucination_filter"; enabled: boolean }
-	| { kind: "save_config"; config: VoiceConfig }
+	| { kind: "save_config"; config: VoiceConfig; successMessage?: string }
 	| { kind: "done"; result: VoiceResult };
 
 export interface VoiceResult {
@@ -145,13 +145,21 @@ function stepFocus(current: SettingsFieldKey, delta: 1 | -1): SettingsFieldKey {
 	return order[next] ?? current;
 }
 
+// Success notify is attached to the save_config effect (rather than a separate
+// notify effect) so the imperative shell can fire it ONLY when persistence
+// succeeds. A plain two-effect list ran both notifies unconditionally on
+// failure because `return` inside runEffect()'s switch case exits the method,
+// not the outer effect loop — review I1 caught this.
 const settingsSave: Handler<"settings_save"> = (state, _action, _ctx) => {
 	const config = configFromDraft(state.settingsDraft);
 	return {
 		state,
 		effects: [
-			{ kind: "save_config", config },
-			{ kind: "notify", level: "info", message: t("notify.settings_saved", "Voice settings saved") },
+			{
+				kind: "save_config",
+				config,
+				successMessage: t("notify.settings_saved", "Voice settings saved"),
+			},
 		],
 	};
 };

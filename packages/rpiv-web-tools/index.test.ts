@@ -1119,4 +1119,26 @@ describe("/web-search-config command", () => {
 		const labels = (ctx.ui.select as ReturnType<typeof vi.fn>).mock.calls[0][1] as string[];
 		expect(labels[0]).toBe("Brave ✓");
 	});
+
+	it("notifies error and skips 'Saved …' when the underlying write fails", async () => {
+		// Force saveJsonConfig to fail by placing a directory at CONFIG_PATH so
+		// writeFileSync throws EISDIR. This drives the same control flow that disk
+		// full / EACCES / EROFS would in production.
+		if (process.platform === "win32") return;
+		mkdirSync(CONFIG_PATH, { recursive: true });
+		try {
+			const { captured } = registerAndCapture();
+			const ctx = createMockCtx({ hasUI: true });
+			(ctx.ui.select as ReturnType<typeof vi.fn>).mockResolvedValueOnce("Brave");
+			(ctx.ui.input as ReturnType<typeof vi.fn>).mockResolvedValueOnce("new-key");
+			await captured.commands.get("web-search-config")?.handler("", ctx as never);
+
+			const notifyMock = ctx.ui.notify as ReturnType<typeof vi.fn>;
+			const calls = notifyMock.mock.calls;
+			expect(calls.some(([msg, level]) => /Failed to save/.test(String(msg)) && level === "error")).toBe(true);
+			expect(calls.some(([msg]) => /^Saved /.test(String(msg)))).toBe(false);
+		} finally {
+			rmSync(CONFIG_PATH, { recursive: true, force: true });
+		}
+	});
 });

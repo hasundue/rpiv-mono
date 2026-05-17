@@ -155,6 +155,67 @@ describe("/advisor — reasoning model", () => {
 	});
 });
 
+describe("/advisor — save failure (persist-first ordering, review I2)", () => {
+	it("disable path: error notify; in-memory model + active tools unchanged", async () => {
+		if (process.platform === "win32") return;
+		const { mkdirSync, rmSync } = await import("node:fs");
+		const { dirname, join } = await import("node:path");
+		const configPath = join(process.env.HOME!, ".config", "rpiv-advisor", "advisor.json");
+		mkdirSync(dirname(configPath), { recursive: true });
+		// Force EISDIR on writeFileSync — same trick the web-tools save-failure
+		// test uses. Drives saveAdvisorConfig → false through the real disk path.
+		mkdirSync(configPath, { recursive: true });
+		try {
+			vi.mocked(showAdvisorPicker).mockResolvedValueOnce("__no_advisor__");
+			const { pi, captured } = register();
+			pi.setActiveTools([ADVISOR_TOOL_NAME, "other"]);
+			vi.mocked(pi.setActiveTools).mockClear();
+			setAdvisorModel(modelA);
+			const ctx = createMockCtx({ hasUI: true, models: [modelA] });
+
+			await captured.commands.get("advisor")?.handler("", ctx as never);
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				expect.stringContaining("Failed to save advisor selection"),
+				"error",
+			);
+			expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("Advisor disabled"), "info");
+			// Persist-first: in-memory model and active-tools registry must be untouched.
+			expect(getAdvisorModel()).toBe(modelA);
+			expect(pi.setActiveTools).not.toHaveBeenCalled();
+		} finally {
+			rmSync(configPath, { recursive: true, force: true });
+		}
+	});
+
+	it("enable path: error notify; in-memory model + active tools unchanged", async () => {
+		if (process.platform === "win32") return;
+		const { mkdirSync, rmSync } = await import("node:fs");
+		const { dirname, join } = await import("node:path");
+		const configPath = join(process.env.HOME!, ".config", "rpiv-advisor", "advisor.json");
+		mkdirSync(dirname(configPath), { recursive: true });
+		mkdirSync(configPath, { recursive: true });
+		try {
+			vi.mocked(showAdvisorPicker).mockResolvedValueOnce("anthropic:opus");
+			const { pi, captured } = register();
+			const ctx = createMockCtx({ hasUI: true, models: [modelA] });
+
+			await captured.commands.get("advisor")?.handler("", ctx as never);
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith(
+				expect.stringContaining("Failed to save advisor selection"),
+				"error",
+			);
+			expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("Advisor: anthropic:opus"), "info");
+			// Persist-first: in-memory model must NOT be set; tool must NOT be added.
+			expect(getAdvisorModel()).toBeUndefined();
+			expect(pi.setActiveTools).not.toHaveBeenCalledWith(expect.arrayContaining([ADVISOR_TOOL_NAME]));
+		} finally {
+			rmSync(configPath, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("registerAdvisorBeforeAgentStart", () => {
 	it("strips advisor from active tools when no model is set", async () => {
 		const { pi, captured } = createMockPi();

@@ -11,10 +11,9 @@
  *   3. (Brave only, legacy) apiKey field in config.json
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, writeFile } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import {
 	DEFAULT_MAX_BYTES,
@@ -24,6 +23,8 @@ import {
 	truncateHead,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import type { GuidanceFields } from "@juicesharp/rpiv-config";
+import { configPath, loadJsonConfig, saveJsonConfig, validateGuidanceFields } from "@juicesharp/rpiv-config";
 import { Type } from "typebox";
 import { createSearchProvider } from "./providers/factory.js";
 import { PROVIDERS } from "./providers/index.js";
@@ -44,9 +45,7 @@ const API_KEY_MASK_VISIBLE_CHARS = 4;
 const FETCH_TEMP_DIR_PREFIX = "rpiv-fetch-";
 const FETCH_TEMP_FILE_NAME = "content.txt";
 
-const CONFIG_DIR = join(homedir(), ".config", "rpiv-web-tools");
-const CONFIG_PATH = join(CONFIG_DIR, "config.json");
-const CONFIG_FILE_MODE = 0o600;
+const CONFIG_PATH = configPath("rpiv-web-tools");
 
 const SUPPORTED_HTTP_PROTOCOLS = new Set(["http:", "https:"]);
 
@@ -60,10 +59,7 @@ const DEFAULT_PROVIDER_NAME = "brave";
 // Config file persistence
 // ---------------------------------------------------------------------------
 
-interface GuidanceFields {
-	promptSnippet?: string;
-	promptGuidelines?: string[];
-}
+// GuidanceFields is now imported from @juicesharp/rpiv-config
 
 interface WebToolsGuidance {
 	web_search?: GuidanceFields;
@@ -78,44 +74,18 @@ interface WebToolsConfig {
 }
 
 function loadConfig(): WebToolsConfig {
-	if (!existsSync(CONFIG_PATH)) return {};
-	try {
-		return JSON.parse(readFileSync(CONFIG_PATH, "utf-8")) as WebToolsConfig;
-	} catch {
-		return {};
-	}
+	return loadJsonConfig<WebToolsConfig>(CONFIG_PATH);
 }
 
-function saveConfig(config: WebToolsConfig): void {
-	mkdirSync(dirname(CONFIG_PATH), { recursive: true });
-	writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
-	try {
-		chmodSync(CONFIG_PATH, CONFIG_FILE_MODE);
-	} catch {
-		// chmod may fail on some filesystems — best effort only
-	}
+function saveConfig(config: WebToolsConfig): boolean {
+	return saveJsonConfig(CONFIG_PATH, config);
 }
 
 // ---------------------------------------------------------------------------
 // Executor guidance — overrides + defaults
 // ---------------------------------------------------------------------------
 
-function validateGuidanceFields(fields: unknown): GuidanceFields {
-	if (!fields || typeof fields !== "object") return {};
-	const g = fields as Record<string, unknown>;
-	const result: GuidanceFields = {};
-	if (typeof g.promptSnippet === "string" && g.promptSnippet.length > 0) {
-		result.promptSnippet = g.promptSnippet;
-	}
-	if (
-		Array.isArray(g.promptGuidelines) &&
-		g.promptGuidelines.length > 0 &&
-		g.promptGuidelines.every((s) => typeof s === "string" && s.length > 0)
-	) {
-		result.promptGuidelines = g.promptGuidelines;
-	}
-	return result;
-}
+// validateGuidanceFields is now imported from @juicesharp/rpiv-config
 
 export const DEFAULT_WEB_SEARCH_SNIPPET = "Search the web for up-to-date information";
 export const DEFAULT_WEB_SEARCH_GUIDELINES: string[] = [
@@ -545,7 +515,16 @@ export function registerWebSearchConfigCommand(pi: ExtensionAPI): void {
 				apiKeys: { ...current.apiKeys, [selectedProvider]: keyToWrite },
 			};
 			delete (toSave as { apiKey?: string }).apiKey;
-			saveConfig(toSave);
+			if (!saveConfig(toSave)) {
+				// Don't lie about persistence — a "Saved …" message followed by an
+				// auth error on the next web_search would point the user at the
+				// wrong surface (vendor) instead of the actual cause (disk write).
+				ctx.ui.notify(
+					`Failed to save ${selectedMeta.label} API key to ${CONFIG_PATH} — disk write failed`,
+					"error",
+				);
+				return;
+			}
 			ctx.ui.notify(
 				trimmed
 					? `Saved ${selectedMeta.label} API key to ${CONFIG_PATH}`

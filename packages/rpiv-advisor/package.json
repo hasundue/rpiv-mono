@@ -39,6 +39,9 @@
       "./index.ts"
     ]
   },
+  "dependencies": {
+    "@juicesharp/rpiv-config": "^1.8.0"
+  },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",

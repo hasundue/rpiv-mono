@@ -1,9 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { configPath, loadJsonConfig } from "@juicesharp/rpiv-config";
 
-export const CONFIG_DIR = join(homedir(), ".config", "rpiv-warp");
-export const CONFIG_PATH = join(CONFIG_DIR, "config.json");
+export const CONFIG_PATH = configPath("rpiv-warp");
 
 export interface RpivWarpConfig {
 	readonly blockingTools?: readonly string[];
@@ -14,14 +11,7 @@ export const DEFAULT_BLOCKING_TOOLS: readonly string[] = ["ask_user_question"];
 export const DEFAULT_HEARTBEAT_MS = 15000;
 
 export function loadConfig(): RpivWarpConfig {
-	if (!existsSync(CONFIG_PATH)) return {};
-	try {
-		const parsed = JSON.parse(readFileSync(CONFIG_PATH, "utf-8")) as unknown;
-		if (parsed === null || typeof parsed !== "object") return {};
-		return parsed as RpivWarpConfig;
-	} catch {
-		return {};
-	}
+	return loadJsonConfig<RpivWarpConfig>(CONFIG_PATH);
 }
 
 export function getHeartbeatMs(): number {

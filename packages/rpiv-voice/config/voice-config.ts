@@ -1,25 +1,20 @@
 /**
- * voice-config — best-effort persistence of optional rpiv-voice settings
- * (custom model path, named mic device) at `~/.config/rpiv-voice/voice.json`.
+ * voice-config — persistence of optional rpiv-voice settings at
+ * `~/.config/rpiv-voice/voice.json`.
  *
- * Both load and save are crash-resistant: malformed JSON or filesystem errors
- * resolve to "no config". The file is created with 0600 perms because it may
- * one day hold device IDs that the user doesn't want world-readable.
+ * Load is crash-resistant: malformed JSON or missing file resolves to an
+ * empty config (warning emitted via `rpiv-config.loadJsonConfig`).
+ *
+ * Save returns a `boolean`; the caller (voice-session shell) notifies the
+ * user on failure so the UI never lies about persistence ("saved" while the
+ * disk write actually failed). chmod to 0600 is best-effort and never gates
+ * the return — see `rpiv-config.saveJsonConfig` for the full contract.
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { configPath, loadJsonConfig, saveJsonConfig } from "@juicesharp/rpiv-config";
 
 // ── Filesystem layout ────────────────────────────────────────────────────────
-const CONFIG_DIR_NAME = "rpiv-voice";
-const CONFIG_FILE_NAME = "voice.json";
-const CONFIG_DIR = join(homedir(), ".config", CONFIG_DIR_NAME);
-const CONFIG_PATH = join(CONFIG_DIR, CONFIG_FILE_NAME);
-
-// ── Permissions & formatting ─────────────────────────────────────────────────
-const CONFIG_FILE_MODE = 0o600;
-const JSON_INDENT = 2;
+const CONFIG_PATH = configPath("rpiv-voice", "voice.json");
 
 // ── Module-level singleton key (cleared by test/setup beforeEach) ────────────
 const VOICE_STATE_KEY = Symbol.for("rpiv-voice");
@@ -32,9 +27,7 @@ export interface VoiceConfig {
 /**
  * The hallucination filter defaults to ENABLED. We only persist the off-state
  * to keep voice.json minimal, which means "field absent" must be read as
- * "enabled". Centralizing this rule here keeps the three readers in sync —
- * persisted config, pipeline runtime options, and the in-flight settings
- * draft all decode the absence the same way.
+ * "enabled".
  */
 export function isHallucinationFilterEnabled(config: { hallucinationFilterEnabled?: boolean }): boolean {
 	return config.hallucinationFilterEnabled !== false;
@@ -42,36 +35,18 @@ export function isHallucinationFilterEnabled(config: { hallucinationFilterEnable
 
 /**
  * The equalizer defaults to DISABLED. Mirror of the hallucination-filter
- * decoding rule but with the inverted polarity: only the on-state is
- * persisted, "field absent" reads as "disabled".
+ * decoding rule but with the inverted polarity.
  */
 export function isEqualizerEnabled(config: { equalizerEnabled?: boolean }): boolean {
 	return config.equalizerEnabled === true;
 }
 
 export function loadVoiceConfig(): VoiceConfig {
-	if (!existsSync(CONFIG_PATH)) return {};
-	try {
-		const parsed = JSON.parse(readFileSync(CONFIG_PATH, "utf-8")) as unknown;
-		if (parsed === null || typeof parsed !== "object") return {};
-		return parsed as VoiceConfig;
-	} catch {
-		return {};
-	}
+	return loadJsonConfig<VoiceConfig>(CONFIG_PATH);
 }
 
-export function saveVoiceConfig(config: VoiceConfig): void {
-	try {
-		mkdirSync(dirname(CONFIG_PATH), { recursive: true });
-		writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, JSON_INDENT)}\n`, "utf-8");
-	} catch {
-		// best-effort
-	}
-	try {
-		chmodSync(CONFIG_PATH, CONFIG_FILE_MODE);
-	} catch {
-		// best-effort — perms are advisory; the user's umask still wins.
-	}
+export function saveVoiceConfig(config: VoiceConfig): boolean {
+	return saveJsonConfig(CONFIG_PATH, config);
 }
 
 export function __resetState(): void {
