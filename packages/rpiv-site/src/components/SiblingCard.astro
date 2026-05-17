@@ -23,12 +23,12 @@ const idx = String(index).padStart(2, "0");
 
 	<div class="sibling__body">
 		<header class="sibling__head">
-			<h4 class="mono sibling__name">{sibling.name}</h4>
+			<h3 class="mono sibling__name">{sibling.name}</h3>
 			<div class="sibling__meta">
-				<span class="chip chip--sage sibling__role" aria-label={`role: ${sibling.role}`}>
+				<span class="chip chip--sage sibling__role">
 					{sibling.role}
 				</span>
-				<span class="mono sibling__ver" aria-label={`version ${sibling.version}`}>
+				<span class="mono sibling__ver">
 					v{sibling.version}
 				</span>
 			</div>
@@ -36,10 +36,10 @@ const idx = String(index).padStart(2, "0");
 
 		<p class="sibling__desc">{sibling.description}</p>
 
-		<pre class="sibling__install" aria-label={`install command: ${sibling.installCmd}`}><code><span class="sibling__prompt" aria-hidden="true">$</span>{" "}{sibling.installCmd}</code></pre>
+		<pre class="sibling__install"><code><span class="sibling__prompt" aria-hidden="true">$</span>{" "}{sibling.installCmd}</code></pre>
 
-		<p class="sibling__peers mono" aria-label={sibling.peers.length > 0 ? `peer dependencies: ${sibling.peers.join(", ")}` : "no peer dependencies"}>
-			<span class="sibling__peers-label" aria-hidden="true">peers</span>
+		<p class="sibling__peers mono">
+			<span class="sibling__peers-label">peers</span>
 			<span class="sibling__peers-arrow" aria-hidden="true">→</span>
 			<span class="sibling__peers-list">{sibling.peers.length > 0 ? sibling.peers.join(" · ") : "—"}</span>
 		</p>
@@ -170,7 +170,6 @@ const idx = String(index).padStart(2, "0");
 		display: -webkit-box;
 		-webkit-box-orient: vertical;
 		-webkit-line-clamp: 3;
-		line-clamp: 3;
 		overflow: hidden;
 	}
 

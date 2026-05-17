@@ -34,7 +34,7 @@ const STEPS = [
 <section id="setup" aria-labelledby="setup-title">
 	<div class="container setup">
 		<p class="kicker">§ setup · /rpiv-setup, fully specified</p>
-		<h2 id="setup-title">Read-only scan, one confirmation listing every install and removal, then a serial install bounded by a 120s timeout. Fail-soft at every I/O boundary.</h2>
+		<h2 id="setup-title">Scan, confirm, install — serial, bounded, fail-soft.</h2>
 
 		<ol class="trace">
 			{STEPS.map((step, i) => (
@@ -48,7 +48,7 @@ const STEPS = [
 						</svg>
 					</div>
 					<div class="trace__content">
-						<h4 class="mono trace__title">{step.title}</h4>
+						<h3 class="mono trace__title">{step.title}</h3>
 						<p class="trace__body">{step.body}</p>
 					</div>
 				</li>
