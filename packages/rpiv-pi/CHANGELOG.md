@@ -7,6 +7,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Pipeline artifacts migrated from `thoughts/shared/` to `.rpiv/artifacts/`, with automatic migration of existing content on session start.
+
 ## [1.8.1] - 2026-05-17
 
 ## [1.8.0] - 2026-05-16

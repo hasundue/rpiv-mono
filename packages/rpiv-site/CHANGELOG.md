@@ -7,6 +7,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Site content updated to reflect the artifact path migration to `.rpiv/artifacts/`.
+
+### Fixed
+- Resolved W3C HTML and CSS validation errors, including heading-level skips, invalid ARIA attributes, and redundant landmark roles.
+
 ## [1.8.1] - 2026-05-17
 
 ### Changed
