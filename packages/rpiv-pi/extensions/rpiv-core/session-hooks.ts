@@ -8,9 +8,12 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
+	type AgentEndEvent,
+	type BeforeAgentStartEvent,
 	type ExtensionAPI,
 	type ExtensionContext,
 	isToolCallEventType,
+	parseSkillBlock,
 	type ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -29,6 +32,7 @@ import {
 } from "./git-context.js";
 import { ARTIFACTS_SUBDIR, clearInjectionState, handleToolCallGuidance, injectRootGuidance } from "./guidance.js";
 import { findMissingSiblings } from "./package-checks.js";
+import { BUNDLED_SKILLS_DIR } from "./paths.js";
 
 const msgAgentsAdded = (n: number) => `Copied ${n} rpiv-pi agent(s) to ~/.pi/agent/agents/`;
 const msgAgentsHealed = (parts: string[]) => `Synced bundled agent(s): ${parts.join(", ")}.`;
@@ -60,7 +64,8 @@ export function registerSessionHooks(pi: ExtensionAPI): void {
 	pi.on("session_compact", async (_event, ctx) => onSessionCompact(_event, ctx, pi));
 	pi.on("session_shutdown", async () => onSessionShutdown());
 	pi.on("tool_call", async (event, ctx) => onToolCall(event, ctx, pi));
-	pi.on("before_agent_start", async () => onBeforeAgentStart(pi));
+	pi.on("before_agent_start", async (event, ctx) => onBeforeAgentStart(event, ctx, pi));
+	pi.on("agent_end", async (_event, ctx) => onAgentEnd(_event, ctx));
 }
 
 // ---------------------------------------------------------------------------
@@ -107,16 +112,44 @@ async function onToolCall(event: ToolCallEvent, ctx: ExtensionContext, pi: Exten
 }
 
 async function onBeforeAgentStart(
+	event: BeforeAgentStartEvent,
+	ctx: ExtensionContext,
 	pi: ExtensionAPI,
 ): Promise<{ message: ReturnType<typeof buildGitContextMessage> } | undefined> {
+	const parsed = parseSkillBlock(event.prompt);
+	if (parsed && isOwnedSkill(parsed.name)) ctx.ui.setStatus("rpiv-skill", `rpiv: ${parsed.name}`);
 	const content = await takeGitContextIfChanged(pi);
 	if (!content) return undefined;
 	return { message: buildGitContextMessage(pi, content) };
 }
 
+async function onAgentEnd(_event: AgentEndEvent, ctx: ExtensionContext): Promise<void> {
+	ctx.ui.setStatus("rpiv-skill", undefined);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// Allowlist of rpiv-pi's own skill names, generated at module load by reading
+// the package's bundled skills/ directory (see paths.ts — matches the
+// `pi.skills` manifest in package.json). Prevents the status bar from
+// claiming `rpiv:` ownership of user-supplied or third-party skills.
+const OWNED_SKILL_NAMES: ReadonlySet<string> = (() => {
+	try {
+		return new Set(
+			readdirSync(BUNDLED_SKILLS_DIR, { withFileTypes: true })
+				.filter((e) => e.isDirectory())
+				.map((e) => e.name),
+		);
+	} catch {
+		return new Set<string>();
+	}
+})();
+
+function isOwnedSkill(name: string): boolean {
+	return OWNED_SKILL_NAMES.has(name);
+}
 
 function resetInjectionState(): void {
 	clearInjectionState();
