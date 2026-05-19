@@ -75,7 +75,7 @@ Skip any commit whose subject matches one of these — they are release pipeline
 
 Flag a commit as breaking if any of these are true:
 
-- The type has a `!` suffix (`feat!:`, `refactor!:`, etc.)
+- The type carries an exclamation suffix (`feat!:`, `refactor!:`, etc.)
 - The commit body contains a `BREAKING CHANGE:` footer
 - The diff removes or renames an exported symbol, removes a CLI flag, or removes a public file
 
