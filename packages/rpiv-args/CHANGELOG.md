@@ -7,6 +7,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Variable substitution (`${SKILL_DIR}`, `${SESSION_ID}`) and inline shell execution in skill bodies, with `shell-timeout` frontmatter and output truncation at 50 KB / 2 000 lines.
+
+### Changed
+- `handleInput` is now async and receives the Pi extension context and API objects.
+
 ## [1.9.2] - 2026-05-19
 
 ## [1.9.1] - 2026-05-19

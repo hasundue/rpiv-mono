@@ -7,6 +7,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- Fourteen skills (`discover`, `research`, `explore`, `design`, `plan`, `blueprint`, `revise`, `validate`, `changelog`, `commit`, `create-handoff`, `resume-handoff`, `outline-test-cases`, `write-test-cases`) pre-bake runtime metadata via shell execution, eliminating per-invocation `date` and `git` shell commands.
+- `commit` skill reads a pre-baked working-tree snapshot instead of issuing `git status` and `git diff` as opening turns.
+
+### Fixed
+- `resume-handoff` correctly handles 0, 1, or 2+ available handoff files when invoked without arguments.
+
 ## [1.9.2] - 2026-05-19
 
 ### Fixed

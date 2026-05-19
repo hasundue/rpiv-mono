@@ -4,6 +4,9 @@ All notable changes to this package will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- `ExecResult` type aligned with the real Pi extension API (`code` instead of `exitCode`, added `killed` boolean).
+
 ## [1.9.2] - 2026-05-19
 
 ## [1.9.1] - 2026-05-19
