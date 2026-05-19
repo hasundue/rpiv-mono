@@ -190,6 +190,48 @@ backward compatibility.
 - Skills **with** placeholders → body gets substitution, raw args still appended after block
 - The `argument-hint` frontmatter field is read but not enforced in v1
 
+## Variables and shell execution
+
+Skills can reference runtime context and inline shell command output. These run on **every** invocation, regardless of whether the skill body uses `$N` / `$ARGUMENTS` tokens.
+
+| Syntax | Replaced with |
+|---|---|
+| `${SKILL_DIR}` | Absolute path to the skill's source directory (forward-slash normalized on Windows) |
+| `${SESSION_ID}` | The current Pi session id |
+| `` !`command` `` | Single-line shell command output (no newline crossing) |
+| ` ```!\n…\n``` ` | Multi-line shell program output (newlines preserved) |
+
+### Shell execution semantics
+
+- **Working directory**: every shell command runs in `process.cwd()` (the Pi session's working directory).
+- **Sequential**: commands within one body run one at a time, in source order. `` !`mkdir x` `` then `` !`ls x` `` is safe.
+- **Output truncation**: combined stdout + stderr capped at 50 KB / 2000 lines (tail-truncated — failures at the end of the output survive).
+- **Errors are inlined** (the rest of the body still reaches the LLM):
+  - Timeout → `[Shell error: timed out after Ns]`
+  - Non-zero exit → `[Shell error: exit code N]\n<stderr>`
+- **`shell-timeout` frontmatter** (seconds, default 120 s):
+
+| Value | Effect |
+|---|---|
+| absent | 120 s (default) |
+| positive number (e.g. `5`, `0.5`) | converted to ms |
+| `0` | timer disabled (no timeout) |
+| any non-finite or negative value (string, `NaN`, `.inf`, `-1`, `true`) | silent fallback to default 120 s |
+
+### Cross-platform skill authoring
+
+On Windows, rpiv-args runs each command via `powershell.exe -Command` (PowerShell 5.1+ ships with every supported Windows version). On macOS / Linux it uses `sh -c`. Most POSIX utilities work on both platforms because PowerShell exposes them as aliases:
+
+| POSIX command | Works on Windows via PowerShell alias |
+|---|---|
+| `ls`, `cat`, `pwd`, `cp`, `mv`, `rm`, `mkdir` | ✅ (aliases of `Get-ChildItem`, `Get-Content`, etc.) |
+| `git`, `npm`, `node`, `python` | ✅ (external binaries on PATH) |
+| `grep`, `sed`, `awk`, `find`, `xargs` | ❌ (not aliased — use PowerShell equivalents like `Select-String`) |
+
+> **POSIX flags are NOT translated.** Aliases match command NAMES only. `` !`rm -rf x` `` will FAIL under PowerShell because `Remove-Item` takes `-Recurse -Force`, not `-rf`. For destructive or flag-heavy commands, prefer external binaries (`git`, `npm`, `node`) or write a portable PowerShell-flavored block (`` ```! ``` ``) instead.
+
+**PowerShell cmdlet exit-code quirk**: external commands propagate their exit code via `$LASTEXITCODE`, which PowerShell reflects in its own exit code (so `` !`git status` `` reports failure correctly). However, **cmdlet errors return exit 0 by default**. If a skill relies on a cmdlet's failure to be visible, prepend `$ErrorActionPreference = "Stop"; ` or use `-ErrorAction Stop` per cmdlet. For maximum portability, prefer external commands (`git`, `npm`) over cmdlets where you care about exit codes.
+
 ## Limitations
 
 | Limitation | Detail |

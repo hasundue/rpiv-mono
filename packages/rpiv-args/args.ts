@@ -2,17 +2,20 @@
  * rpiv-args — core logic.
  *
  * Intercepts `/skill:<name> <args>` at the input hook and emits a Pi skill
- * wrapper with opt-in $N/$ARGUMENTS/$@/${@:N[:L]} substitution on the body.
- * Two emit paths:
- *   - No-token path: byte-identical to Pi's built-in `_expandSkillCommand`
- *     output (wrapper + `\n\n${args}` suffix), preserving full backward
- *     compatibility for skills without placeholders.
- *   - Token path: substitutes inside the body and INTENTIONALLY drops the
- *     trailing `\n\n${args}` suffix. The bare imperative outside the block
- *     hijacks LLM attention from the skill workflow; inside-only emission
- *     leaves the skill body as the sole user-message payload competing for
- *     attention. See architecture.md "System-Prompt Protocol & Token-Path
- *     Divergence".
+ * wrapper. Pipeline (FR9):
+ *   strip frontmatter → $N/$ARGUMENTS substitution (opt-in via TOKEN_REGEX)
+ *   → ${SKILL_DIR}/${SESSION_ID} substitution (always-on, FR10)
+ *   → shell execution (always-on, FR10 — see executeShellInBody)
+ *   → wrap in <skill name=… location=…>…</skill> block
+ *
+ * Emit-path divergence (FR12): the trailing `\n\n${args}` suffix policy is
+ * governed by ORIGINAL token presence (`hadTokens`). The no-token path emits
+ * byte-identical to Pi's built-in `_expandSkillCommand`; the token path
+ * intentionally drops the suffix (substitution consumed the args; bare
+ * trailing imperatives hijack LLM attention from the skill body).
+ *
+ * Variable substitution and shell execution always run on BOTH emit paths —
+ * `hadTokens` governs the suffix only, not the substitution pipeline.
  *
  * Also prepends a skill-invocation protocol to the system prompt every turn
  * (via before_agent_start) so the LLM treats trailing text after `</skill>`
@@ -30,7 +33,12 @@ import { dirname, join, resolve } from "node:path";
 import {
 	type BeforeAgentStartEvent,
 	type BeforeAgentStartEventResult,
+	DEFAULT_MAX_BYTES,
+	DEFAULT_MAX_LINES,
+	type ExecResult,
 	type ExtensionAPI,
+	type ExtensionContext,
+	formatSize,
 	getAgentDir,
 	type InputEvent,
 	type InputEventResult,
@@ -38,6 +46,8 @@ import {
 	parseFrontmatter,
 	type Skill,
 	stripFrontmatter,
+	type TruncationResult,
+	truncateTail,
 } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
@@ -45,7 +55,8 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Matches any placeholder Pi's substituteArgs would replace. Used as the
- *  opt-in gate: absent → pass through verbatim. */
+ *  opt-in gate for the $N/$ARGUMENTS substitution path AND as the
+ *  emit-path flag (hadTokens) governing the trailing-args suffix. */
 const TOKEN_REGEX = /\$(?:\d+|ARGUMENTS|@|\{@:\d+(?::\d+)?\})/;
 
 /** Prefix Pi uses (`agent-session.js:829`). Single-space tokenisation. */
@@ -53,6 +64,23 @@ const SKILL_PREFIX = "/skill:";
 
 /** Re-entrancy guard. */
 const WRAPPED_PREFIX = "<skill ";
+
+/** Default ceiling for shell execution: 2 minutes. Frontmatter `shell-timeout`
+ *  (seconds) overrides; `0` disables natively via pi.exec's `&&` short-circuit
+ *  at dist/core/exec.js:42. */
+const DEFAULT_SHELL_TIMEOUT_MS = 120_000;
+
+/** Inline shell: !`command` — non-greedy single-line, no newline crossing.
+ *  Capture is `[^`\n]+` (at least one char) so a literal `` !`` `` in
+ *  prose does NOT run the shell with an empty `-c` argument (per
+ *  artifact-reviewer finding R3).
+ *  Runs AFTER block; block-before-inline is enforced by the mask-and-restore
+ *  pass below (block outputs are protected from inline re-execution per R2). */
+const SHELL_INLINE_PATTERN = /!`([^`\n]+)`/g;
+
+/** Block shell: ```!\n…\n``` — multiline non-greedy. Captured content is
+ *  handed to the shell as a single program (newlines preserved). */
+const SHELL_BLOCK_PATTERN = /```!\n([\s\S]*?)\n```/g;
 
 // ---------------------------------------------------------------------------
 // Tokeniser — byte-equivalent to Pi's parseCommandArgs at
@@ -108,6 +136,163 @@ export function substituteArgs(content: string, args: string[]): string {
 	result = result.replace(/\$ARGUMENTS/g, allArgs);
 	result = result.replace(/\$@/g, allArgs);
 	return result;
+}
+
+// ---------------------------------------------------------------------------
+// Variable substitution — mechanical, runs after $N/$ARGUMENTS and before
+// shell execution. ${SKILL_DIR} is forward-slash-normalized at the
+// substitution site ONLY — buildSkillBlock must stay byte-exact (its
+// `References are relative to ${baseDir}` line is consumed by Pi unchanged).
+//
+// Backslash normalization is GATED on process.platform === "win32" so a
+// POSIX path containing a literal backslash (e.g. `/tmp/weird\name`) is
+// byte-preserving. Per artifact-reviewer finding R7.
+// ---------------------------------------------------------------------------
+
+export function substituteVariables(body: string, vars: { skillDir: string; sessionId: string }): string {
+	const skillDir = process.platform === "win32" ? vars.skillDir.split("\\").join("/") : vars.skillDir;
+	return body.replace(/\$\{SKILL_DIR\}/g, skillDir).replace(/\$\{SESSION_ID\}/g, vars.sessionId);
+}
+
+// ---------------------------------------------------------------------------
+// shell-timeout resolution.
+//
+// YAML scalar coercion at frontmatter parse time can produce any of: number,
+// string, boolean, null, NaN (from `.nan`), Infinity (from `.inf`). Silent
+// fallback to default on any non-finite or non-positive value matches Pi's
+// graceful-degradation posture at dist/utils/frontmatter.js:24 (`parsed ?? {}`).
+//
+// Number.isFinite is load-bearing — both NaN and Infinity must be rejected:
+//   - NaN  → would silently bypass exec.js:42's `&& options.timeout > 0`
+//            short-circuit (NaN > 0 is false) and disable the timer, hiding
+//            an FR4 violation.
+//   - Infinity → Node's setTimeout(fn, Infinity) clamps to 1ms → an immediate
+//                kill (the opposite of "no timeout").
+//
+// `0` is honored as explicit disable (FR4).
+// ---------------------------------------------------------------------------
+
+export function resolveShellTimeoutMs(frontmatter: { "shell-timeout"?: unknown }): number {
+	const raw = frontmatter["shell-timeout"];
+	if (raw === undefined) return DEFAULT_SHELL_TIMEOUT_MS;
+	if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_SHELL_TIMEOUT_MS;
+	if (raw < 0) return DEFAULT_SHELL_TIMEOUT_MS;
+	if (raw === 0) return 0;
+	return raw * 1000;
+}
+
+// ---------------------------------------------------------------------------
+// Shell execution.
+//
+// Pipeline: blocks first, then inlines. Block-before-inline is load-bearing
+// — the block pattern's content group `[\s\S]*?` legitimately matches `!\``
+// inside the fence; running inline first would eat backticks from block
+// content and produce malformed bodies.
+//
+// Sequential iteration (FR11) — never Promise.all. Skill authors rely on
+// `!`mkdir x`` → `!`ls x`` ordering. The git-context.ts:36-44 Promise.all
+// precedent for parallel read-only git commands is INTENTIONALLY not copied.
+//
+// Cross-platform shim: PowerShell on Windows (POSIX-alias coverage), sh on
+// POSIX. `pi.exec` uses spawn(…, {shell:false}) per dist/core/exec.js:13-17
+// so the shim is required.
+//
+// `pi.exec` NEVER rejects (dist/core/exec.js:10-72 — every termination path
+// calls resolve(...)). No try/catch needed here.
+//
+// FR5 branch order: killed → code !== 0 → success. `killed` is checked first
+// because a timed-out child may also report a non-zero code via `code ?? 0`
+// (exec.js:60) or `1` via the catch (exec.js:71); the timeout message wins.
+// ---------------------------------------------------------------------------
+
+/** Truncate a string for LLM consumption: 50KB / 2000-line tail budget,
+ *  with a `[truncated: hit ...]` footer when truncation occurred. Shared
+ *  by the success path (`formatShellOutput`) and the non-zero exit path
+ *  in `runOneShellCommand` so a multi-MB stderr from a failed `!`npm test``
+ *  cannot bypass FR2's budget (per R1). */
+function truncateForLLM(content: string): string {
+	const trunc: TruncationResult = truncateTail(content, {
+		maxLines: DEFAULT_MAX_LINES,
+		maxBytes: DEFAULT_MAX_BYTES,
+	});
+	let out = trunc.content;
+	if (trunc.truncated) {
+		const limit = trunc.truncatedBy === "lines" ? `${trunc.maxLines} lines` : formatSize(trunc.maxBytes);
+		out += `\n[truncated: hit ${limit}]`;
+	}
+	return out;
+}
+
+function formatShellOutput(res: ExecResult): string {
+	let combined = res.stdout;
+	if (res.stderr && res.stderr.length > 0) {
+		const sep = combined.length === 0 || combined.endsWith("\n") ? "" : "\n";
+		combined = `${combined}${sep}[stderr]\n${res.stderr}`;
+	}
+	return truncateForLLM(combined);
+}
+
+async function runOneShellCommand(command: string, pi: ExtensionAPI, cwd: string, timeoutMs: number): Promise<string> {
+	const [shCmd, shFlag] = process.platform === "win32" ? ["powershell.exe", "-Command"] : ["sh", "-c"];
+	const res: ExecResult = await pi.exec(shCmd, [shFlag, command], { cwd, timeout: timeoutMs });
+	if (res.killed) {
+		// Floor at 1s so sub-second `shell-timeout` values (e.g. 0.5) don't display
+		// the contradictory `[Shell error: timed out after 0s]` (per R4).
+		const sec = Math.max(1, Math.round(timeoutMs / 1000));
+		return `[Shell error: timed out after ${sec}s]`;
+	}
+	if (res.code !== 0) {
+		// FR2 budget on the error path — stderr is truncated identically to
+		// the success path so a failed `!`npm test`` cannot blow the LLM budget (R1).
+		return `[Shell error: exit code ${res.code}]\n${truncateForLLM(res.stderr)}`;
+	}
+	return formatShellOutput(res);
+}
+
+/** Mask-and-restore strategy (per R2): run the block pass first, replacing
+ *  each block match with a non-printable sentinel (`\x00BLOCK${n}\x00`) that
+ *  the inline regex CANNOT match (sentinels have no backticks). Then run the
+ *  inline pass on the sentinel-bearing string. Finally restore sentinels to
+ *  their block outputs. This guarantees block stdout containing literal
+ *  `` !`...` `` is NEVER re-executed by the inline pass. */
+export async function executeShellInBody(
+	body: string,
+	pi: ExtensionAPI,
+	cwd: string,
+	timeoutMs: number,
+): Promise<string> {
+	// Pass 1: blocks → sentinels (outputs stashed in blockOutputs).
+	const blockOutputs: string[] = [];
+	let withSentinels = "";
+	{
+		const matches = [...body.matchAll(SHELL_BLOCK_PATTERN)];
+		let last = 0;
+		for (const m of matches) {
+			const idx = m.index ?? 0;
+			withSentinels += body.slice(last, idx);
+			withSentinels += `\x00BLOCK${blockOutputs.length}\x00`;
+			blockOutputs.push(await runOneShellCommand(m[1] ?? "", pi, cwd, timeoutMs));
+			last = idx + m[0].length;
+		}
+		withSentinels += body.slice(last);
+	}
+	// Pass 2: inlines on the sentinel-bearing string. Sentinels carry no
+	// backticks so the inline regex (which requires backticks at both ends)
+	// cannot match against them — block outputs are protected.
+	let withInlines = "";
+	{
+		const matches = [...withSentinels.matchAll(SHELL_INLINE_PATTERN)];
+		let last = 0;
+		for (const m of matches) {
+			const idx = m.index ?? 0;
+			withInlines += withSentinels.slice(last, idx);
+			withInlines += await runOneShellCommand(m[1] ?? "", pi, cwd, timeoutMs);
+			last = idx + m[0].length;
+		}
+		withInlines += withSentinels.slice(last);
+	}
+	// Pass 3: restore block sentinels to their actual outputs.
+	return withInlines.replace(/\x00BLOCK(\d+)\x00/g, (_, n) => blockOutputs[parseInt(n, 10)] ?? "");
 }
 
 // ---------------------------------------------------------------------------
@@ -210,10 +395,18 @@ function appendArgs(skillBlock: string, args: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Input handler
+// Input handler — async pipeline (FR9 ordering).
+//
+// `pi` is threaded as the 3rd parameter (not captured at module level) so the
+// extension owns zero new singleton state — see architecture.md "Module-level
+// Cache Reset". `ctx` carries the session manager for ${SESSION_ID}.
 // ---------------------------------------------------------------------------
 
-export function handleInput(event: InputEvent): InputEventResult {
+export async function handleInput(
+	event: InputEvent,
+	ctx: ExtensionContext,
+	pi: ExtensionAPI,
+): Promise<InputEventResult> {
 	const text = event.text;
 
 	// Re-entrancy: already-wrapped text (from our own or any other
@@ -237,20 +430,24 @@ export function handleInput(event: InputEvent): InputEventResult {
 		return { action: "continue" }; // let Pi emit its error via _expandSkillCommand
 	}
 
-	const { frontmatter } = parseFrontmatter<{ "argument-hint"?: string }>(content);
-	void frontmatter; // informational only in v1
+	const { frontmatter } = parseFrontmatter<{ "argument-hint"?: string; "shell-timeout"?: unknown }>(content);
 	const body = stripFrontmatter(content).trim();
+	const timeoutMs = resolveShellTimeoutMs(frontmatter);
 
-	// Opt-in gate: if body has no token, emit byte-identical to Pi's :841.
-	if (!TOKEN_REGEX.test(body)) {
-		return { action: "transform", text: appendArgs(buildSkillBlock(entry, body), argsString) };
-	}
+	// FR12: emit-path divergence (token-path drops the trailing `\n\n${args}`
+	// suffix) is governed by ORIGINAL token presence only. FR10: variable
+	// substitution and shell execution run on BOTH paths regardless.
+	const hadTokens = TOKEN_REGEX.test(body);
 
-	const parsed = parseCommandArgs(argsString);
-	const substituted = substituteArgs(body, parsed);
-	// Substitution consumes the args — do not also append them after </skill>.
-	// Bare trailing imperatives hijack LLM attention from the skill body. See architecture.md.
-	return { action: "transform", text: buildSkillBlock(entry, substituted) };
+	let processed = hadTokens ? substituteArgs(body, parseCommandArgs(argsString)) : body;
+	processed = substituteVariables(processed, {
+		skillDir: entry.baseDir,
+		sessionId: ctx.sessionManager.getSessionId(),
+	});
+	processed = await executeShellInBody(processed, pi, process.cwd(), timeoutMs);
+
+	const block = buildSkillBlock(entry, processed);
+	return { action: "transform", text: hadTokens ? block : appendArgs(block, argsString) };
 }
 
 // ---------------------------------------------------------------------------
@@ -274,11 +471,13 @@ export function handleBeforeAgentStart(event: BeforeAgentStartEvent): BeforeAgen
 }
 
 // ---------------------------------------------------------------------------
-// Registration
+// Registration. The input handler arrow forwards `ctx` (Pi's runner awaits
+// the result at runner.js:801) and closes over `pi` so handleInput sees both
+// without new module-level state.
 // ---------------------------------------------------------------------------
 
 export function registerArgsHandler(pi: ExtensionAPI): void {
-	pi.on("input", (event) => handleInput(event));
+	pi.on("input", async (event, ctx) => handleInput(event, ctx, pi));
 	pi.on("before_agent_start", (event) => handleBeforeAgentStart(event));
 	pi.on("session_start", (event) => {
 		if (event.reason === "reload" || event.reason === "startup") {
