@@ -2,6 +2,7 @@
 name: plan
 description: Convert a design artifact into a phased implementation plan with parallelized atomic phases and explicit success criteria, written to .rpiv/artifacts/plans/. Use after the design skill when the user wants a design turned into an actionable, phase-by-phase plan to hand to the implement skill. Prefer plan when a straightforward phased breakdown is sufficient, and prefer blueprint when iterative vertical-slice micro-checkpoints between phases are needed.
 argument-hint: "[design artifact path]"
+shell-timeout: 10
 ---
 
 # Plan
@@ -11,6 +12,19 @@ You are tasked with creating phased implementation plans from design artifacts. 
 ## Input
 
 `$ARGUMENTS` — path to a design artifact (`.rpiv/artifacts/designs/*.md`).
+
+## Metadata
+
+```!
+node "${SKILL_DIR}/../_shared/now.mjs"
+echo
+node "${SKILL_DIR}/../_shared/git-context.mjs"
+```
+
+- `now.mjs` (line 1) — `<iso>\t<slug>` tab-separated.
+- `git-context.mjs` (lines below) — `branch:` / `commit:` / `repo:` / `root:` / `in_repo:`.
+
+Copy values verbatim — do not reformat the timezone offset.
 
 ## Flow
 
@@ -81,10 +95,9 @@ Get feedback on structure before writing details.
 
 After structure approval, write the plan **incrementally** — skeleton first, then fill each phase:
 
-1. **Write the plan skeleton** to `.rpiv/artifacts/plans/YYYY-MM-DD_HH-MM-SS_description.md`
-   - Timestamp: run `date +"%Y-%m-%dT%H:%M:%S%z"` — raw for `date:` and `last_updated:`, first 19 chars (`T`→`_`, `:`→`-`) for filename slug.
-   - Format: `YYYY-MM-DD_HH-MM-SS_description.md` where:
-     - YYYY-MM-DD / HH-MM-SS come from the `date` output above
+1. **Write the plan skeleton** to `.rpiv/artifacts/plans/<slug>_<description>.md` (use `<slug>` from the Metadata block's `now.mjs` line 1; copy `<iso>` verbatim into frontmatter `date:` and `last_updated:`).
+   - Format: `<slug>_<description>.md` where:
+     - `<slug>` comes from `now.mjs` (second tab-separated field on line 1)
      - description is a brief kebab-case description (may include ticket number)
    - Examples:
      - With ticket: `2025-01-08_14-30-00_ENG-1478-parent-child-tracking.md`
