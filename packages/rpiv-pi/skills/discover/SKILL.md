@@ -2,6 +2,7 @@
 name: discover
 description: Interview the developer one question at a time to extract feature intent and requirements, then synthesize into a Feature Requirements Document at .rpiv/artifacts/discover/. The first question is intent-only and runs before any codebase probe; subsequent questions ground in evidence the probe surfaces. Use as the canonical entry point of the pipeline before research, or to stress-test a feature idea before codebase discovery. The FRD's Decisions block is consumed by `research` and propagates through Developer Context into `design`.
 argument-hint: "[free-text feature description | existing artifact path]"
+shell-timeout: 10
 ---
 
 # Discover
@@ -11,6 +12,19 @@ You are tasked with extracting feature intent and requirements through a one-que
 ## Input
 
 `$ARGUMENTS` — free-text feature description, or path to an existing FRD / ticket / doc for refinement.
+
+## Metadata
+
+```!
+node "${SKILL_DIR}/../_shared/now.mjs"
+echo
+node "${SKILL_DIR}/../_shared/git-context.mjs"
+```
+
+- `now.mjs` (line 1) — `<iso>\t<slug>` tab-separated.
+- `git-context.mjs` (lines below) — `branch:` / `commit:` / `repo:` / `root:` / `in_repo:`.
+
+Copy values verbatim — do not reformat the timezone offset.
 
 ## Flow
 
@@ -155,13 +169,10 @@ Compile interview output into the FRD. The interview's logical order (problem �
 
 ### Step 7: Write Artifact, Present, Chain
 
-1. **Determine metadata**:
-   - Filename: `.rpiv/artifacts/discover/<YYYY-MM-DD_HH-MM-SS>_<topic>.md`
-     - Topic: kebab-case slug derived from the settled feature concept (lowercase, hyphens for spaces, strip special chars).
-     - Timestamp guarantees uniqueness across invocations — no slug-collision check.
-   - Repository name: from git root basename, or current directory basename if not a git repo.
-   - Use the git branch and commit from the git context injected at the start of the session (or run `git branch --show-current` / `git rev-parse --short HEAD` directly; fallbacks: `no-branch` / `no-commit`).
-   - Timestamp: run `date +"%Y-%m-%dT%H:%M:%S%z"` — raw for `date:` and `last_updated:`, first 19 chars (`T`→`_`, `:`→`-`) for filename slug.
+1. **Determine metadata** (from the Metadata block above):
+   - Filename: `.rpiv/artifacts/discover/<slug>_<topic>.md` — `<slug>` is the second tab-separated field on `now.mjs` line 1; `<topic>` is a kebab-case slug from the settled feature concept.
+   - `repository:` ← `repo:` label; `branch:` / `commit:` ← matching labels.
+   - `date:` / `last_updated:` ← `<iso>` (first tab-separated field on `now.mjs` line 1, offset verbatim).
    - Interviewer: from the User in the injected git context (fallback: `unknown`).
 
 2. **Write the FRD** using the Write tool. Frontmatter `status: complete`. All template sections present and filled. The Write tool creates parent directories automatically — no `mkdir -p` needed in the skill.
