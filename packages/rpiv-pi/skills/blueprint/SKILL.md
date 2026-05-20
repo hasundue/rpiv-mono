@@ -222,7 +222,7 @@ After the design summary is confirmed, decompose the feature into vertical slice
    - **## Performance Considerations**: Any performance implications or optimizations.
    - **## Migration Notes**: If applicable — existing data, schema changes, rollback strategy, backwards compatibility. Empty if not applicable.
    - **## Pattern References**: `path/to/similar.ext:line-range` — what pattern to follow and why.
-   - **## Developer Context**: Record questions exactly as asked during checkpoint, including `file:line` evidence. Also record micro-checkpoint interactions from Step 6.3.
+   - **## Developer Context**: Record questions exactly as asked during checkpoint, including `file:line` evidence. Also record micro-checkpoint interactions from Step 6.3 and Step 8.4 reviewer-failure fallback notes.
    - **## Plan History**: Phase approval/revision log. `- Phase N: {name} — pending/approved as generated/revised: {what changed}`. implement ignores this section.
    - **## References**: Research artifacts, tickets, similar implementations.
 
@@ -284,7 +284,7 @@ Present a **condensed review** of the slice — NOT the full generated code. The
 
 Use the `ask_user_question` tool to confirm. Question: "Slice {N/M}: {slice name} — {files affected}. {1-line summary}. Approve?". Header: "Slice {N}". Options: "Approve (Recommended)" (Lock this slice, write to artifact, proceed to slice {N+1}); "Revise this slice" (Adjust code before proceeding — describe what to change); "Rethink remaining slices" (This slice reveals a design issue — revisit decomposition); "Revisit a decision" (A Step-4 decision is wrong — return to Step 4 for that decision before continuing).
 
-**Final slice**: prepend `Cross-phase: {OK | violations: ...}.` to the question using slice-verifier's Cross-slice row from the final slice's 6.2 dispatch. Approve subtext becomes "Lock, write, run Step 7 finalize automatically." Replace "Rethink remaining slices" with "Reopen earlier phase" (cascade per 6.4.Rethink) — no remaining slices to rethink.
+**Final slice**: prepend `Cross-slice: {OK | violations: ...}.` to the question using slice-verifier's Cross-slice row from the final slice's 6.2 dispatch. Approve subtext becomes "Lock, write, run Step 7 finalize and Step 8 reviewer dispatch automatically; pause at Step 9 for triage." Replace "Rethink remaining slices" with "Reopen earlier phase" (cascade per 6.4.Rethink) — no remaining slices to rethink.
 
 **Checkpoint cadence**: One slice per checkpoint. Present each slice individually, regardless of slice count.
 
@@ -331,7 +331,7 @@ The artifact was created as a skeleton in Step 5 and filled progressively in Ste
 
    If any check fails, return to Step 6. Do NOT flip status. (7.1 and 7.2 guard the same invariant — empty content ↔ unresolved counter.)
 
-3. **Update frontmatter** via Edit: set `status: in-review` (Step 9 flips to `ready` after triage — keeps consumers off an artifact still being edited). Leave `last_updated` / `last_updated_by` as-is.
+3. **Update frontmatter** via Edit: `status: in-progress` → `status: in-review` (Step 9 flips to `ready` after triage — keeps consumers off an artifact still being edited). Leave `last_updated` / `last_updated_by` as-is.
 
 4. **Verify template completeness**: Ensure all sections from the template reference in Step 5 are present and filled. Edit to fix any gaps.
 
@@ -341,68 +341,76 @@ The artifact was created as a skeleton in Step 5 and filled progressively in Ste
 
 ### Step 8: Independent Plan Review
 
-After Step 7 finalizes the artifact, dispatch an independent review subagent
-to walk every Phase code fence against the live codebase. The subagent runs
-in a fresh context window with replaced system prompt — it exploits the
-criticism > generation asymmetry plus fresh-context isolation. Inherits the
-orchestrator's model (no model upgrade required); the value comes from the
-fresh dispatch, not from a stronger model.
+After Step 7 finalizes the artifact, dispatch two independent review subagents in parallel — one to walk every Phase code fence, one to walk every verification intent — both against the live codebase at HEAD.
 
-#### 8.1. Dispatch the artifact-reviewer subagent
+#### 8.1. Dispatch artifact-code-reviewer and artifact-coverage-reviewer in parallel
 
 Reuse the exact `file_path` string passed to `Write` at Step 5 — the runtime already resolved it for this platform; do not rebuild it from `pwd`. `ls` to verify it still exists; abort dispatch on miss.
 
+Send both Agent calls in a single assistant message so they run in parallel:
+
 ```
 Agent({
-  subagent_type: "artifact-reviewer",
-  description: "post-finalization plan review",
+  subagent_type: "artifact-code-reviewer",
+  description: "post-finalization plan code review",
   prompt: `Plan artifact: {Step-5 Write file_path, ls-verified}
 
 Review the finalized plan against the live codebase at HEAD. Walk every Phase code fence, audit against code-quality / codebase-fit / actionability, emit one severity-tagged row per finding.`
 })
+
+Agent({
+  subagent_type: "artifact-coverage-reviewer",
+  description: "post-finalization plan coverage review",
+  prompt: `Plan artifact: {Step-5 Write file_path, ls-verified}
+
+Review the finalized plan's verification-intent coverage. Walk every ## Verification Notes and ## Precedents & Lessons entry; for each, verify it lands in either a phase's ### Success Criteria: bullet or as a visible code mirror. Emit one severity-tagged row per uncovered entry.`
+})
 ```
 
-#### 8.2. Persist the review table to the artifact
+#### 8.2. Persist the merged review table to the artifact
 
-The agent returns a markdown table with columns `plan-loc | codebase-loc | severity | dimension | finding | recommendation`. Append it to the plan artifact as a new section, with a `resolution` column appended (initially blank, filled progressively at Step 9):
+Each agent returns a markdown table with columns `plan-loc | codebase-loc | severity | dimension | finding | recommendation`. Merge both tables into one section, prepending a `source` column (`code` for artifact-code-reviewer rows, `coverage` for artifact-coverage-reviewer rows) and appending a `resolution` column (initially blank, filled progressively at Step 9):
 
 ```markdown
 ## Plan Review (Step 8)
 
-_Independent post-finalization review by artifact-reviewer subagent. Findings triaged at Step 9._
+_Independent post-finalization review by artifact-code-reviewer and artifact-coverage-reviewer subagents. Findings triaged at Step 9._
 
-| plan-loc          | codebase-loc                | severity   | dimension      | finding | recommendation | resolution |
-| ----------------- | --------------------------- | ---------- | -------------- | ------- | -------------- | ---------- |
-| {agent row 1}                                                                  | (filled at Step 9)         |
-| {agent row 2}                                                                  | (filled at Step 9)         |
-| ...
+| source   | plan-loc          | codebase-loc                | severity   | dimension             | finding   | recommendation   | resolution         |
+| -------- | ----------------- | --------------------------- | ---------- | --------------------- | --------- | ---------------- | ------------------ |
+| code     | {plan-loc}        | {codebase-loc}              | {severity} | {dimension}           | {finding} | {recommendation} | (filled at Step 9) |
+| coverage | {plan-loc}        | <n/a>                       | {severity} | verification-coverage | {finding} | {recommendation} | (filled at Step 9) |
+| ...      |                   |                             |            |                       |           |                  |                    |
 ```
 
-If the agent emits zero rows, still emit the section with a single line: `_No findings — artifact-reviewer cleared the artifact._`. Persistence is mandatory regardless of finding count — the section is the durable audit trail.
+Sort merged rows by severity first (blocker → concern → suggestion), then by source (`code` before `coverage` for stable ordering within a severity). Within a `(severity, source)` bucket, preserve each agent's own emitted order — do not re-sort across source spaces (the two agents key on different artifact loci: `Phase N §M` for code, `## Verification Notes §K` for coverage).
+
+If both agents emit zero rows, still emit the section with a single line: `_No findings — both reviewers cleared the artifact._`. Persistence is mandatory regardless of finding count — the section is the durable audit trail.
 
 #### 8.3. Tally findings for Step 9's prompt
 
-Count rows by severity. Store the counts in main context for Step 9's developer prompt:
+Count merged rows by severity. Store the counts in main context for Step 9's developer prompt:
 
 ```
 {B} blockers, {C} concerns, {S} suggestions
 ```
 
-Do NOT auto-apply any finding. The orchestrator never makes the apply / defer / dismiss judgment alone — that lives with the developer at Step 9. The reviewer's role is to surface; the developer's role is to triage.
+Do NOT auto-apply any finding. The orchestrator never makes the apply / defer / dismiss judgment alone — that lives with the developer at Step 9. The reviewers' role is to surface; the developer's role is to triage.
 
 #### 8.4. Failure handling
 
-If artifact-reviewer errors out (subprocess crash, malformed output, timeout):
-- Skip Step 8's findings; do not block on the failure.
-- Append `_Step 8 review failed: {one-line cause}._` under the `## Plan Review (Step 8)` heading instead of the row table.
-- Record the fallback in `## Developer Context`: `Step 8 review unavailable; proceeded to developer review without artifact-reviewer findings.`
-- Proceed to Step 9.
+Per-agent: if one reviewer errors out (subprocess crash, malformed output, timeout) and the other succeeds, persist the successful agent's rows and append a one-line failure note for the missing source. If both fail, append the failure note alone.
 
-The developer review path at Step 9 absorbs the cost — that is how planning worked before this step existed.
+- Successful side: persist its rows as in 8.2.
+- Failed side: append `_Step 8 {code|coverage} review failed: {one-line cause}._` under the `## Plan Review (Step 8)` heading.
+- Record any failure in `## Developer Context`: `Step 8 {code|coverage} review unavailable; proceeded to developer review without {agent-name} findings.`
+- Proceed to Step 9 regardless.
+
+The 8-column header is retained when only one source returns; only rows from the failing agent are absent. Step 9 triage iterates whatever rows are present.
 
 ### Step 9: Review & Iterate
 
-1. **Triage artifact-reviewer findings first** (skip if Step 8 returned no findings):
+1. **Triage Step 8 reviewer findings first** (skip if Step 8 returned no findings):
 
    Present the Plan Review table from Step 8 to the developer with severity-grouped framing:
 
@@ -416,10 +424,10 @@ The developer review path at Step 9 absorbs the cost — that is how planning wo
    ```
 
    Use `ask_user_question` with options "applied / deferred / dismissed":
-   - **applied**: Edit the affected `## Phase N` code fence per the recommendation; fill `resolution`.
+   - **applied**: Edit per the recommendation target — if the recommendation names a `## Phase N` code fence, Edit that fence; if it names a `### Success Criteria:` bullet, Edit that block; if it names both, Edit both. Routing follows the recommendation text, not the `source` column. Fill `resolution`.
    - **deferred** / **dismissed**: fill `resolution` with the reason.
 
-   **Order and batching**: blockers sequentially (resolution may invalidate later rows). Concerns and suggestions: batch up to 4 independent rows per `ask_user_question` call (Step 4's rule). Independent = different files AND neither recommendation references the other's location; otherwise sequential.
+   **Order and batching**: blockers sequentially (resolution may invalidate later rows). Concerns and suggestions: batch up to 4 independent rows per `ask_user_question` call (Step 4's rule). Independent = different files / different intents AND neither recommendation references the other's location; otherwise sequential.
 
 2. **Flip status to ready**: once every row has a `resolution` (or the table is empty per Step 8's no-findings / failure-fallback path), Edit frontmatter `status: in-review` → `status: ready`. Artifact is now implement-ready.
 
@@ -429,7 +437,7 @@ The developer review path at Step 9 absorbs the cost — that is how planning wo
    `.rpiv/artifacts/plans/{filename}.md`
 
    {N} architectural decisions fixed, {P} phases generated, {M} new files, {K} existing files modified.
-   {R} revisions during generation. {B+C+S} reviewer findings triaged at Step 9 ({A} applied, {D} deferred, {DD} dismissed).
+   {R} revisions during generation. {T} reviewer findings triaged at Step 9 ({A} applied, {D} deferred, {DD} dismissed).
 
    Please review and let me know:
    - Are the architectural decisions correct?
@@ -474,9 +482,11 @@ The developer review path at Step 9 absorbs the cost — that is how planning wo
 | Default (research artifact provided) | codebase-pattern-finder |
 | Novel work (new library/pattern) | + web-search-researcher |
 | Step 4 correction path (developer flags missed area) | targeted codebase-analyzer (max 1-2) |
+| Step 6 pre-slice-1 template fetch | codebase-pattern-finder (one per slice needing its own template) |
 | Step 6.1 mid-generation gap (specific anchor unclear) | targeted codebase-analyzer (max 1) |
 | Step 6.2 per-slice verify (mandatory) | slice-verifier |
-| Step 8 post-finalization review (mandatory) | artifact-reviewer |
+| Step 8 post-finalization code review (mandatory) | artifact-code-reviewer |
+| Step 8 post-finalization coverage review (mandatory) | artifact-coverage-reviewer |
 
 Spawn multiple agents in parallel when they're searching for different things. Each agent runs in isolation — provide complete context in the prompt, including specific directory paths when the feature targets a known module. Don't write detailed prompts about HOW to search — just tell it what you're looking for and where.
 
@@ -494,8 +504,8 @@ Spawn multiple agents in parallel when they're searching for different things. E
   - NEVER fill empty Phase content at Step 7 — empty at finalize time = return to Step 6 (preserves the 6.3 micro-checkpoint)
   - ALWAYS dispatch slice-verifier at Step 6.2 for every slice before presenting at 6.3; never skip, never batch across slices
   - NEVER silently dismiss a slice-verifier VIOLATION — either fix and re-dispatch, or surface the verbatim finding to the developer at 6.3 for ratification
-  - ALWAYS dispatch artifact-reviewer at Step 8 after Step 7 finalize, BEFORE the developer review at Step 9
-  - NEVER auto-apply an artifact-reviewer finding at Step 8; triage is the developer's call at Step 9
+  - ALWAYS dispatch artifact-code-reviewer AND artifact-coverage-reviewer in parallel at Step 8 after Step 7 finalize, BEFORE the developer review at Step 9
+  - NEVER auto-apply a Step 8 reviewer finding; triage is the developer's call at Step 9
   - ALWAYS hold `status: in-review` from Step 7 through Step 9; flip to `ready` only after every row has a `resolution` (or the table is empty)
   - Step 6.3 → Step 4 exists for late-discovered decision errors; revisit rather than force a wrong shape through remaining slices
 - NEVER skip the developer checkpoint — developer input on architectural decisions is the highest-value signal in the planning process

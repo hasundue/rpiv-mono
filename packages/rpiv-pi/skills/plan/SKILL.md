@@ -27,7 +27,7 @@ Copy values verbatim — do not reformat the timezone offset.
 
 ## Flow
 
-1. Input → 2. Decompose into phases → 3. Write plan → 4. Review → 5. Follow-ups
+1. Input → 2. Decompose into phases → 3. Write plan → 4. Independent Coverage Review → 5. Triage & iterate → 6. Follow-ups
 
 The final artifact is implement-ready.
 
@@ -117,7 +117,7 @@ branch: {Current branch name}
 repository: {Repository name}
 topic: "{Feature/Task Name}"
 tags: [plan, relevant-component-names]
-status: ready
+status: in-progress
 parent: "{path to design artifact}"
 last_updated: {Same ISO timestamp as `date:` above}
 last_updated_by: {`author:` from Metadata block}
@@ -188,6 +188,10 @@ last_updated_by: {`author:` from Metadata block}
 
 {From design artifact — copied directly. If applicable: schema changes, data migration, rollback strategy, backwards compatibility. Empty if not applicable.}
 
+## Developer Context
+
+{Empty at skeleton write; Step 4.4 fallback notes and any post-write developer interactions land here.}
+
 ## References
 
 - Design: `.rpiv/artifacts/designs/{file}.md`
@@ -195,14 +199,94 @@ last_updated_by: {`author:` from Metadata block}
 - Original ticket: `thoughts/me/tickets/{file}.md`
 ```
 
-### Step 4: Review
+### Step 4: Independent Coverage Review
 
-1. **Present the plan location**:
+After Step 3 finalizes the artifact, dispatch an independent coverage-review subagent to walk every verification-intent entry against the plan's phases at HEAD.
+
+The plan's emitted code originates from the design artifact, where it was the subject of code review at design's Step 8 (subject to design's Step 8.4 fallback). Coverage review is the only review dispatched here; code review belongs upstream. Every `## Verification Notes` entry must land in a phase's `### Success Criteria:` bullet or as a visible code mirror.
+
+#### 4.0. Flip status to in-review
+
+Before dispatching the reviewer, Edit frontmatter `status: in-progress` → `status: in-review` (Step 5 flips to `ready` after triage — keeps consumers off an artifact still being edited).
+
+#### 4.1. Dispatch the artifact-coverage-reviewer subagent
+
+Reuse the exact `file_path` string passed to `Write` at Step 3 — the runtime already resolved it for this platform; do not rebuild it from `pwd`. `ls` to verify it still exists; abort dispatch on miss.
+
+```
+Agent({
+  subagent_type: "artifact-coverage-reviewer",
+  description: "post-finalization plan coverage review",
+  prompt: `Plan artifact: {Step-3 Write file_path, ls-verified}
+
+Review the finalized plan's verification-intent coverage. Walk every ## Verification Notes entry (and any carried-forward precedent-lesson content); for each, verify it lands in either a phase's ### Success Criteria: bullet or as a visible code mirror. Emit one severity-tagged row per uncovered entry.`
+})
+```
+
+#### 4.2. Persist the coverage table to the artifact
+
+The agent returns a markdown table with columns `plan-loc | codebase-loc | severity | dimension | finding | recommendation`. Append it to the plan artifact as a new section, with a `resolution` column appended (initially blank, filled progressively at Step 5):
+
+```markdown
+## Plan Coverage Review (Step 4)
+
+_Independent post-finalization verification-coverage review. Findings triaged at Step 5._
+
+| plan-loc          | codebase-loc                | severity   | dimension             | finding   | recommendation   | resolution         |
+| ----------------- | --------------------------- | ---------- | --------------------- | --------- | ---------------- | ------------------ |
+| {plan-loc}        | <n/a>                       | {severity} | verification-coverage | {finding} | {recommendation} | (filled at Step 5) |
+| ...               |                             |            |                       |           |                  |                    |
+```
+
+If the agent emits zero rows, still emit the section with a single line: `_No findings — coverage reviewer cleared the artifact._`. Persistence is mandatory regardless of finding count — the section is the durable audit trail.
+
+#### 4.3. Tally findings for Step 5's prompt
+
+Count rows by severity. Store the counts in main context for Step 5's developer prompt:
+
+```
+{B} blockers, {C} concerns, {S} suggestions
+```
+
+Do NOT auto-apply any finding. The orchestrator never makes the apply / defer / dismiss judgment alone — that lives with the developer at Step 5. The reviewer's role is to surface; the developer's role is to triage.
+
+#### 4.4. Failure handling
+
+If artifact-coverage-reviewer errors out (subprocess crash, malformed output, timeout):
+- Skip Step 4's findings; do not block on the failure.
+- Append `_Step 4 coverage review failed: {one-line cause}._` under the `## Plan Coverage Review (Step 4)` heading instead of the row table.
+- Record the fallback in a `## Developer Context` section (create if absent): `Step 4 review unavailable; proceeded to developer review without reviewer findings.`
+- Proceed to Step 5.
+
+### Step 5: Review & Iterate
+
+1. **Triage Step 4 reviewer findings first** (skip if Step 4 returned no findings):
+
+   Present the Plan Coverage Review table from Step 4 to the developer with severity-grouped framing:
+
+   ```
+   Coverage-reviewer findings: {B} blockers, {C} concerns, {S} suggestions
+
+   Triage each row before the freeform review below:
+   - applied — change made; I'll Edit the affected `### Success Criteria:` block (or add a code-guard reference) and fill the row's resolution as `applied: {one-line summary}`
+   - deferred — noted but not fixing now; resolution cites why (e.g., "out of scope for this plan", "follow-up commit")
+   - dismissed — not a real issue; resolution explains why the reviewer was wrong (e.g., "X is intentional because Y")
+   ```
+
+   Use `ask_user_question` with options "applied / deferred / dismissed":
+   - **applied**: Edit the affected `### Success Criteria:` block per the recommendation; fill `resolution`.
+   - **deferred** / **dismissed**: fill `resolution` with the reason.
+
+   **Order and batching**: blockers sequentially (resolution may invalidate later rows). Concerns and suggestions: batch up to 4 independent rows per `ask_user_question` call (Step 4's rule). Independent = different files / different intents AND neither recommendation references the other's location; otherwise sequential.
+
+2. **Flip status to ready**: once every row has a `resolution` (or the table is empty per Step 4's no-findings / failure-fallback path), Edit frontmatter `status: in-review` → `status: ready`. Artifact is now implement-ready.
+
+3. **Present the plan location** (after triage is complete):
    ```
    Implementation plan written to:
    `.rpiv/artifacts/plans/{filename}.md`
 
-   {N} phases, {M} total file changes.
+   {N} phases, {M} total file changes. {T} reviewer findings triaged at Step 5 ({A} applied, {D} deferred, {DD} dismissed). When Step 4 hit the failure-fallback path, render this line as `Step 4 review unavailable — proceeded without findings.`
 
    Please review:
    - Are the phases properly scoped for worktree execution?
@@ -218,7 +302,7 @@ last_updated_by: {`author:` from Metadata block}
    > 🆕 Tip: start a fresh session with `/new` first — chained skills work best with a clean context window.
    ```
 
-### Step 5: Handle Follow-ups
+### Step 6: Handle Follow-ups
 
 - **Edit in-place.** Use the Edit tool to update the plan artifact directly. Phase numbering stays stable when possible — renumber only when a phase is split or merged.
 - **Bump frontmatter.** Update `last_updated` + `last_updated_by`; set `last_updated_note: "<one-line summary>"`.
@@ -300,6 +384,12 @@ last_updated_by: {`author:` from Metadata block}
 - "Verify scrollbar appearance" → `[ ] Open {component}, scroll, observe slim scrollbar`
 - "Do NOT use X" → `grep -r "X" src/ should return 0 matches`
 
+## Subagent Usage
+
+| Context | Agents Spawned |
+|---|---|
+| Step 4 post-finalization coverage review (mandatory) | artifact-coverage-reviewer |
+
 ## Important Notes
 
 - NEVER edit source files — this skill produces a plan document, not implementation
@@ -307,4 +397,7 @@ last_updated_by: {`author:` from Metadata block}
 - The plan template must be compatible with implement — preserve the phase/success criteria structure
 - If the design artifact has unresolved questions, STOP — send the developer back to design
 - Code in the plan comes from the design artifact's Architecture section — do not invent new code
-- **Frontmatter consistency**: Use snake_case for multi-word field names in plan frontmatter
+- ALWAYS dispatch artifact-coverage-reviewer at Step 4 after Step 3 write, BEFORE the developer review at Step 5
+- NEVER auto-apply a Step 4 reviewer finding; triage is the developer's call at Step 5
+- ALWAYS hold `status: in-review` from Step 4.0 through Step 5; flip to `ready` only after every row has a `resolution` (or the table is empty)
+- **Frontmatter consistency**: Always include frontmatter, use snake_case for multi-word fields, keep tags relevant
