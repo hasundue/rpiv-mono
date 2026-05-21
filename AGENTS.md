@@ -26,40 +26,63 @@ Use a conventional prefix followed by a kebab-case description:
 
 | Prefix | When to use |
 |---|---|
-| `feat/` | A new feature that can be PR'd to upstream |
-| `fix/` | A bug fix that can be PR'd to upstream |
-| `chore/` | Maintenance, refactoring, or tooling that can be PR'd to upstream |
-| `fork/feat/` | A new feature **not** mergeable to upstream (depends on unmerged work) |
-| `fork/fix/` | A bug fix **not** mergeable to upstream (depends on unmerged work) |
-| `fork/chore/` | Maintenance, refactoring, or tooling **not** mergeable to upstream (depends on unmerged work) |
+| `feat-` | A new feature that can be PR'd to upstream |
+| `fix-` | A bug fix that can be PR'd to upstream |
+| `chore-` | Maintenance, refactoring, or tooling that can be PR'd to upstream |
+| `fork-*` | Any of the above, but **not** mergeable to upstream (depends on unmerged work) |
 
-A branch is non-mergeable (gets a prefix under `fork/`) **when it depends on another branch that is not yet in upstream/main**. Determine this mechanically:
+A branch is non-mergeable (gets a prefix under `fork-`) **when it depends on another branch that is not yet in upstream/main**. Determine this mechanically:
 
 ```
-# If the base of this branch has commits not in upstream/main, it gets fork/...
-git merge-base --is-ancestor upstream/main <base-branch> || fork/relevant-prefix
+# If the base of this branch has commits not in upstream/main, it gets fork-...
+git merge-base --is-ancestor upstream/main <base-branch> || fork-relevant-prefix
 ```
 
-This rule is transitive — if branch A depends on `fork/feat/B`, then A automatically qualifies as `fork/` too.
+This rule is transitive — if branch A depends on a `fork-*` branch, then A automatically qualifies as `fork-` too.
+
+### Starting new work
+
+Before creating a branch, choose the right base:
+
+| Branch type | Base from | Reason |
+|---|---|---|
+| `feat-*`, `fix-*`, `chore-*` | `upstream/main` | Your work must be clean for upstream PRs; `origin/main` may contain fork-only breaking changes |
+| `fork-*` | Its parent branch | Depends on unmerged work in the parent |
+
+Create the branch and push it to origin with upstream tracking:
+
+```bash
+git fetch upstream main
+git checkout -b feat-description upstream/main
+git push -u origin feat-description
+```
 
 ### Keep branches current
 
-Before starting work on a conventional branch (`feat/`, `fix/`, `chore/`), rebase it against upstream/main:
+Rebase your branch to keep it current with upstream. Since rebase rewrites history, push with `--force-with-lease` to avoid accidentally overwriting others' work.
 
-```
+**Conventional branches** (`feat-*`, `fix-*`, `chore-*`) — rebase against upstream/main:
+
+```bash
+git fetch upstream main
+git switch <branch-name>
 git rebase upstream/main
+git push --force-with-lease origin <branch-name>
 ```
 
-For `fork/*` branches, rebase against your parent branch instead (the branch it depends on):
+**`fork-*` branches** — rebase against the parent branch instead:
 
-```
+```bash
+git fetch origin <parent-branch>
+git switch <branch-name>
 git rebase <parent-branch>
+git push --force-with-lease origin <branch-name>
 ```
 
-If the parent is `main`, rebase against `upstream/main` just like a conventional branch.
+If the parent is `main`, fetch from `upstream/main` just like a conventional branch.
 
 ### Branch lifecycle
 
 - Add features and fixes atomically — one concern per branch, orthogonal when possible.
 - Delete your branch once it has been merged upstream (or merged into `main` and confirmed working).
-- Always try to keep branches mergeable to upstream. When that isn't possible, the `fork/*` prefix distinguishes them clearly.
+- Always try to keep branches mergeable to upstream. When that isn't possible, the `fork-` prefix distinguishes them clearly.
