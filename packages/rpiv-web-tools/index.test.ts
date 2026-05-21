@@ -340,6 +340,28 @@ describe("web_fetch.execute — URL validation", () => {
 				?.execute?.("tc", { url }, undefined as never, undefined as never, createMockCtx()),
 		).rejects.toThrow(/private\/loopback/);
 	});
+
+	// The previous it.each runs against the default provider (brave). SearXNG is
+	// structurally interesting because its baseUrl is allowed to point at
+	// loopback (self-hosted) — that exemption must NOT leak to web_fetch, which
+	// retrieves arbitrary URLs returned by search. The guard sits in
+	// parseAndAssertHttpUrl *before* the provider is consulted, so it should
+	// still fire when the active provider is searxng.
+	it("refuses private/loopback host when active provider is searxng", async () => {
+		writeConfig({ provider: "searxng", baseUrls: { searxng: "http://localhost:8080" } });
+		const { captured } = registerAndCapture();
+		await expect(
+			captured.tools
+				.get("web_fetch")
+				?.execute?.(
+					"tc",
+					{ url: "http://127.0.0.1/secret" },
+					undefined as never,
+					undefined as never,
+					createMockCtx(),
+				),
+		).rejects.toThrow(/private\/loopback/);
+	});
 });
 
 describe("web_fetch.execute — happy path", () => {
@@ -1450,7 +1472,7 @@ describe("/web-search-config command — searxng", () => {
 		}
 	});
 
-	it("--show surfaces the resolved searxng URL and its source", async () => {
+	it("--show surfaces the resolved searxng URL and its source (env)", async () => {
 		process.env.SEARXNG_URL = "http://my-searx:8080";
 		const { captured } = registerAndCapture();
 		const ctx = createMockCtx({ hasUI: true });
@@ -1458,6 +1480,25 @@ describe("/web-search-config command — searxng", () => {
 		const msg = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls[0][0];
 		expect(msg).toContain("searxng url: http://my-searx:8080");
 		expect(msg).toContain("source: env");
+	});
+
+	it("--show surfaces the resolved searxng URL and its source (config)", async () => {
+		writeConfig({ baseUrls: { searxng: "http://config-host:7000" } });
+		const { captured } = registerAndCapture();
+		const ctx = createMockCtx({ hasUI: true });
+		await captured.commands.get("web-search-config")?.handler("--show", ctx as never);
+		const msg = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls[0][0];
+		expect(msg).toContain("searxng url: http://config-host:7000");
+		expect(msg).toContain("source: config");
+	});
+
+	it("--show surfaces the resolved searxng URL and its source (default)", async () => {
+		const { captured } = registerAndCapture();
+		const ctx = createMockCtx({ hasUI: true });
+		await captured.commands.get("web-search-config")?.handler("--show", ctx as never);
+		const msg = (ctx.ui.notify as ReturnType<typeof vi.fn>).mock.calls[0][0];
+		expect(msg).toContain(`searxng url: ${SEARXNG_DEFAULT_URL}`);
+		expect(msg).toContain("source: default");
 	});
 });
 
@@ -1502,6 +1543,18 @@ describe("SearxngProvider constructor", () => {
 
 	it("rejects an unparseable URL", () => {
 		expect(() => new SearxngProvider({ baseUrl: "not a url" })).toThrow(/is not a valid URL/);
+	});
+});
+
+// The integrated paths (web_search.execute, /web-search-config) always supply
+// a baseUrl via resolveSearxngBaseUrl, which falls back to SEARXNG_DEFAULT_URL.
+// The "is not set" error path inside SearxngProvider.search() is therefore
+// only reachable for direct programmatic consumers — the class is exported,
+// so it's still part of the public surface. Pin it directly.
+describe("SearxngProvider.search() — direct unit tests", () => {
+	it("throws 'SEARXNG_URL is not set' when constructed with an empty baseUrl", async () => {
+		const provider = new SearxngProvider({ baseUrl: "" });
+		await expect(provider.search("q", 5)).rejects.toThrow(/SEARXNG_URL is not set/);
 	});
 });
 
