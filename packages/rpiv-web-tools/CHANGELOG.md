@@ -12,6 +12,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 - **Breaking (provider factory):** `createSearchProvider(name, apiKey: string)` is now `createSearchProvider(name, creds: ProviderCredentials)` where `ProviderCredentials = { apiKey?: string; baseUrl?: string }`. The six hosted providers still receive their key transparently via `creds.apiKey`; direct downstream callers must update to the options-bag form. SearXNG uses the new `baseUrl` slot.
+- README clarifies that the SSRF guard applies to URLs `web_fetch` retrieves, not to the SearXNG search endpoint (which intentionally supports loopback for self-hosted instances).
+- README adds a Docker recipe for running SearXNG locally with persistent settings.
+
+### Fixed
+- Harden SearXNG provider against misconfigured URLs: reject non-HTTP schemes at construction, strip multiple trailing slashes, and surface a dedicated `401` hint for auth-proxy rejections.
+
+### Breaking / Upgrade Notes
+- `createSearchProvider(name, apiKey)` callers must update to `createSearchProvider(name, { apiKey, baseUrl })`.
 
 ## [1.11.0] - 2026-05-20
 
