@@ -16,6 +16,7 @@ const safe = (args, fb) => {
 		const out = execFileSync("git", args, {
 			encoding: "utf-8",
 			stdio: ["ignore", "pipe", "ignore"],
+			cwd: process.cwd(),
 		}).trim();
 		return out || fb;
 	} catch {
