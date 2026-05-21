@@ -16,7 +16,6 @@
 
 import { createHash } from "node:crypto";
 import {
-	copyFileSync,
 	existsSync,
 	mkdirSync,
 	readdirSync,
@@ -28,6 +27,7 @@ import {
 } from "node:fs";
 import { isAbsolute, join, resolve, sep } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { configPath } from "@juicesharp/rpiv-config";
 import { BUNDLED_AGENTS_DIR } from "./paths.js";
 import { isPlainObject, toErrorMessage } from "./utils.js";
 
@@ -43,10 +43,20 @@ export const SYNC_OP = {
 	REMOVE: "remove",
 	MANIFEST_WRITE: "manifest-write",
 	MKDIR: "mkdir",
+	READ_MODEL_CONFIG: "read-model-config",
 } as const;
 
 /** String union derived from SYNC_OP. */
 export type SyncOp = (typeof SYNC_OP)[keyof typeof SYNC_OP];
+
+/** Thinking levels matching pi-subagents' custom-agents.js:58. */
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+/** Config entry: string shorthand (model-only) or object extended (model + thinking). */
+export type AgentModelEntry = string | { model?: string; thinking?: ThinkingLevel };
+
+/** Config file shape: agent-filename-stem → entry. */
+export type AgentModelsConfig = Record<string, AgentModelEntry>;
 
 export interface SyncError {
 	file?: string;
@@ -221,6 +231,95 @@ function sha256(buf: Buffer | string): string {
 	return createHash("sha256").update(buf).digest("hex");
 }
 
+const AGENT_MODELS_CONFIG_PATH: string = configPath("rpiv-pi", "agent-models.json");
+
+/**
+ * Load per-agent model config from ~/.config/rpiv-pi/agent-models.json.
+ *
+ * Error handling (tiered):
+ * - File missing → silent return {}
+ * - Malformed JSON or read failure → console.warn + SyncError in result
+ * - Valid but not a plain object → silent return {}
+ *
+ * Never throws.
+ */
+function loadAgentModelsConfig(result: SyncResult): AgentModelsConfig {
+	const path = AGENT_MODELS_CONFIG_PATH;
+	if (!existsSync(path)) return {};
+	try {
+		const raw = readFileSync(path, "utf-8");
+		const parsed = JSON.parse(raw);
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+		return parsed as AgentModelsConfig;
+	} catch (e) {
+		console.warn(`rpiv-pi: failed to read agent-models.json at ${path} — ${toErrorMessage(e)}`);
+		result.errors.push({ op: SYNC_OP.READ_MODEL_CONFIG, message: toErrorMessage(e) });
+		return {};
+	}
+}
+
+/**
+ * Inject frontmatter fields (model / thinking) into an agent .md file.
+ *
+ * Config entry resolved by filename stem (name without .md).
+ * - String → inject only `model:`
+ * - Object → inject `model:` and/or `thinking:`
+ * - No config entry → return Buffer unchanged
+ *
+ * Uses manual string insertion: finds the closing `---` delimiter and inserts
+ * new key:value lines before it. This avoids pulling in a YAML serializer.
+ */
+export function injectFrontmatterFields(srcContent: Buffer, entry: string, config: AgentModelsConfig): Buffer {
+	const key = entry.replace(/\.md$/, "");
+	const value = config[key];
+	if (value === undefined || value === null) return srcContent;
+
+	const content = srcContent.toString("utf-8");
+	const lines = content.split("\n");
+
+	// Find the second `---` (closing frontmatter delimiter).
+	let dashCount = 0;
+	let fmEnd = -1;
+	for (let i = 0; i < lines.length; i++) {
+		if (lines[i].trim() === "---") {
+			dashCount++;
+			if (dashCount === 2) {
+				fmEnd = i;
+				break;
+			}
+		}
+	}
+
+	if (fmEnd === -1) {
+		// Malformed frontmatter — inject nothing, return as-is.
+		return srcContent;
+	}
+
+	const insertBefore = fmEnd;
+	const newLines: string[] = [];
+
+	if (typeof value === "string") {
+		// String shorthand: model-only
+		newLines.push(`model: ${value}`);
+	} else {
+		// Object extended: model and/or thinking
+		if (typeof value.model === "string" && value.model.length > 0) {
+			newLines.push(`model: ${value.model}`);
+		}
+		if (typeof value.thinking === "string" && value.thinking.length > 0) {
+			newLines.push(`thinking: ${value.thinking}`);
+		}
+	}
+
+	if (newLines.length === 0) {
+		// No fields to inject (empty model + no thinking) — unchanged.
+		return srcContent;
+	}
+
+	const modified = [...lines.slice(0, insertBefore), ...newLines, ...lines.slice(insertBefore)];
+	return Buffer.from(modified.join("\n"), "utf-8");
+}
+
 /**
  * Read the managed-file manifest from the target directory.
  * Supports both v1 (string[]) and v2 (Record<string,string>) formats. v1 entries
@@ -341,6 +440,9 @@ function processSourceEntries(
 ): Manifest {
 	const newManifest: Manifest = {};
 
+	// Read agent-models config once per sync.
+	const agentConfig = loadAgentModelsConfig(result);
+
 	for (const entry of sourceEntries) {
 		const src = join(BUNDLED_AGENTS_DIR, entry);
 		const dest = safeJoin(targetDir, entry);
@@ -359,11 +461,14 @@ function processSourceEntries(
 			newManifest[entry] = knownHash;
 			continue;
 		}
-		const srcHash = sha256(srcContent);
+
+		// Inject model/thinking into frontmatter for this agent.
+		const injectedBuf = injectFrontmatterFields(srcContent, entry, agentConfig);
+		const srcHash = sha256(injectedBuf);
 
 		if (!existsSync(dest)) {
 			try {
-				copyFileSync(src, dest);
+				writeFileSync(dest, injectedBuf);
 				result.added.push(entry);
 				newManifest[entry] = srcHash;
 			} catch (e) {
@@ -391,7 +496,7 @@ function processSourceEntries(
 
 		if (apply || isSafeDestructiveOp({ hasV2Data, knownHash, destHash })) {
 			try {
-				copyFileSync(src, dest);
+				writeFileSync(dest, injectedBuf);
 				result.updated.push(entry);
 				newManifest[entry] = srcHash;
 			} catch (e) {

@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	CLEANUP_SKIP_REASON,
 	cleanupPerCwdAgents,
+	injectFrontmatterFields,
 	isSafeDestructiveOp,
 	SYNC_OP,
 	summarizeCleanupSkips,
@@ -44,6 +45,9 @@ afterEach(() => {
 	// Remove the `agent/` parent — not just `agent/agents/` — so Q18's writeFileSync
 	// (which needs the `agent` slot empty) and cross-test isolation both hold.
 	rmSync(join(homedir(), ".pi", "agent"), { recursive: true, force: true });
+	// Clean up agent-models config so tests don't leak across describe blocks.
+	const configDir = join(homedir(), ".config", "rpiv-pi");
+	if (existsSync(configDir)) rmSync(configDir, { recursive: true, force: true });
 	vi.restoreAllMocks();
 });
 
@@ -913,5 +917,157 @@ describe("isSafeDestructiveOp", () => {
 
 	it("rejects: v2 marker absent + known hash differs from dest → false (smart gate trumps legacy)", () => {
 		expect(isSafeDestructiveOp({ hasV2Data: false, knownHash: HASH_A, destHash: HASH_B })).toBe(false);
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-agent model injection
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("injectFrontmatterFields — unit tests", () => {
+	const agentMd = `---
+name: test-agent
+description: "A test agent"
+tools: read, grep
+isolated: true
+---
+
+You are a test agent.`;
+
+	it("injects model: from string shorthand", () => {
+		const buf = Buffer.from(agentMd, "utf-8");
+		const result = injectFrontmatterFields(buf, "test-agent.md", { "test-agent": "anthropic/sonnet" });
+		const content = result.toString("utf-8");
+		expect(content).toContain("model: anthropic/sonnet");
+		expect(content).toContain("---");
+	});
+
+	it("injects model: and thinking: from object extended", () => {
+		const buf = Buffer.from(agentMd, "utf-8");
+		const result = injectFrontmatterFields(buf, "test-agent.md", {
+			"test-agent": { model: "anthropic/sonnet", thinking: "high" },
+		});
+		const content = result.toString("utf-8");
+		expect(content).toContain("model: anthropic/sonnet");
+		expect(content).toContain("thinking: high");
+	});
+
+	it("injects thinking: only (no model)", () => {
+		const buf = Buffer.from(agentMd, "utf-8");
+		const result = injectFrontmatterFields(buf, "test-agent.md", { "test-agent": { thinking: "low" } });
+		const content = result.toString("utf-8");
+		expect(content).toContain("thinking: low");
+		expect(content).not.toContain("model:");
+	});
+
+	it("returns Buffer unchanged when agent has no config entry", () => {
+		const buf = Buffer.from(agentMd, "utf-8");
+		const result = injectFrontmatterFields(buf, "test-agent.md", { "other-agent": "gpt-4o" });
+		expect(result).toBe(buf);
+	});
+
+	it("returns Buffer unchanged for empty config object", () => {
+		const buf = Buffer.from(agentMd, "utf-8");
+		const result = injectFrontmatterFields(buf, "test-agent.md", { "test-agent": {} });
+		expect(result).toBe(buf);
+	});
+
+	it("strips .md suffix from entry name for config lookup", () => {
+		const buf = Buffer.from(agentMd, "utf-8");
+		const result = injectFrontmatterFields(buf, "test-agent.md", { "test-agent": "claude/sonnet" });
+		const content = result.toString("utf-8");
+		expect(content).toContain("model: claude/sonnet");
+	});
+
+	it("no frontmatter delimiters → unchanged", () => {
+		const buf = Buffer.from("Just a raw markdown body", "utf-8");
+		const result = injectFrontmatterFields(buf, "plain-body.md", { "plain-body": "gpt/o1" });
+		expect(result).toBe(buf);
+	});
+});
+
+describe("syncBundledAgents — per-agent model injection (integration)", () => {
+	const configDir = join(homedir(), ".config", "rpiv-pi");
+	const configPath = join(configDir, "agent-models.json");
+
+	function writeConfig(data: unknown): void {
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(configPath, JSON.stringify(data, null, 2), "utf-8");
+	}
+
+	it("writes hash of injected content to manifest (post-injection invariant)", () => {
+		const bundled = bundledNames();
+		if (bundled.length === 0) return;
+		const target = bundled[0];
+		const agentName = target.replace(/\.md$/, "");
+		writeConfig({ [agentName]: "anthropic/sonnet" });
+
+		const r = syncBundledAgents(false);
+
+		expect(r.errors).toEqual([]);
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+		const storedHash = manifest[target];
+		expect(storedHash).toMatch(/^[a-f0-9]{64}$/);
+
+		// The stored hash must match the file on disk (injected content).
+		const diskContent = readFileSync(join(targetDir, target));
+		const diskHash = sha256(diskContent);
+		expect(storedHash).toBe(diskHash);
+
+		// The stored hash must NOT match the clean source.
+		const srcContent = bundledContent(target);
+		const srcHash = sha256(srcContent);
+		expect(storedHash).not.toBe(srcHash);
+	});
+
+	it("config change triggers auto-update on smart-gate sync", () => {
+		const bundled = bundledNames();
+		if (bundled.length === 0) return;
+		const target = bundled[0];
+		const agentName = target.replace(/\.md$/, "");
+
+		writeConfig({ [agentName]: "anthropic/sonnet" });
+		syncBundledAgents(false);
+
+		// Change config.
+		writeConfig({ [agentName]: "anthropic/claude-sonnet-4" });
+		const r = syncBundledAgents(false);
+
+		expect(r.updated).toContain(target);
+		expect(r.pendingUpdate).not.toContain(target);
+		const content = readFileSync(join(targetDir, target), "utf-8");
+		expect(content).toContain("model: anthropic/claude-sonnet-4");
+	});
+
+	it("malformed JSON config does not crash sync (collects error)", () => {
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(configPath, "{ not valid json ::", "utf-8");
+
+		const r = syncBundledAgents(false);
+
+		expect(r.errors.some((e) => e.op === SYNC_OP.READ_MODEL_CONFIG)).toBe(true);
+		// All agents still synced with clean source.
+		const bundled = bundledNames();
+		for (const name of bundled) {
+			expect(readFileSync(join(targetDir, name), "utf-8")).toBe(bundledContent(name));
+		}
+	});
+
+	it("apply=true overwrites user edits AND injects model", () => {
+		const bundled = bundledNames();
+		if (bundled.length === 0) return;
+		const target = bundled[0];
+		const agentName = target.replace(/\.md$/, "");
+
+		writeConfig({ [agentName]: "anthropic/sonnet" });
+		syncBundledAgents(true);
+
+		// User edits file, then apply again.
+		writeFileSync(join(targetDir, target), "user customization", "utf-8");
+		const r = syncBundledAgents(true);
+
+		expect(r.updated).toContain(target);
+		const content = readFileSync(join(targetDir, target), "utf-8");
+		expect(content).toContain("model: anthropic/sonnet");
 	});
 });
