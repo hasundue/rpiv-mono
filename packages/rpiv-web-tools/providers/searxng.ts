@@ -30,11 +30,28 @@ function normalizeSearxngResults(raw: SearxngRawResponse, maxResults: number): S
 	}));
 }
 
-function stripTrailingSlash(url: string): string {
-	return url.endsWith("/") ? url.slice(0, -1) : url;
+function stripTrailingSlashes(url: string): string {
+	return url.replace(/\/+$/, "");
 }
 
-export interface SearxngProviderOptions {
+// Reject anything that isn't an http(s) URL — a user-supplied SEARXNG_URL
+// must not be allowed to silently become `file://`, `javascript:`, `data:`
+// or any other scheme that `new URL()` accepts but we'd misuse downstream.
+function assertHttpUrl(url: string): void {
+	let parsed: URL;
+	try {
+		parsed = new URL(url);
+	} catch {
+		throw new Error(`${SEARXNG_URL_ENV_VAR} is not a valid URL (got: ${url})`);
+	}
+	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+		throw new Error(
+			`${SEARXNG_URL_ENV_VAR} must use http:// or https:// (got: ${parsed.protocol.replace(":", "")}://)`,
+		);
+	}
+}
+
+interface SearxngProviderOptions {
 	apiKey?: string;
 	baseUrl: string;
 }
@@ -49,7 +66,9 @@ export class SearxngProvider implements SearchProvider {
 
 	constructor(options: SearxngProviderOptions) {
 		this.apiKey = options.apiKey?.trim() || undefined;
-		this.baseUrl = stripTrailingSlash(options.baseUrl?.trim() ?? "");
+		const trimmed = stripTrailingSlashes(options.baseUrl?.trim() ?? "");
+		if (trimmed) assertHttpUrl(trimmed);
+		this.baseUrl = trimmed;
 	}
 
 	async search(query: string, maxResults: number, signal?: AbortSignal): Promise<SearchResponse> {
@@ -78,13 +97,17 @@ export class SearxngProvider implements SearchProvider {
 
 		if (!res.ok) {
 			const text = await res.text();
-			// 403 from a default SearXNG install almost always means JSON output is
-			// disabled — the docs explicitly warn that "Requesting an unset format
-			// will return a 403 Forbidden error". Surface the actionable fix.
-			const hint =
-				res.status === 403
-					? " (the SearXNG instance may have JSON output disabled; enable 'json' under 'search.formats' in its settings.yml)"
-					: "";
+			// 401 ≈ reverse-proxy auth rejected the Bearer token. 403 from a default
+			// SearXNG install almost always means JSON output is disabled — the docs
+			// explicitly warn that "Requesting an unset format will return a 403
+			// Forbidden error". Surface the actionable fix for each.
+			let hint = "";
+			if (res.status === 401) {
+				hint = ` (the SearXNG instance's reverse-proxy rejected the Bearer token; check ${SEARXNG_API_KEY_ENV_VAR} or apiKeys.searxng)`;
+			} else if (res.status === 403) {
+				hint =
+					" (the SearXNG instance may have JSON output disabled; enable 'json' under 'search.formats' in its settings.yml)";
+			}
 			throw new Error(`${this.label} Search API error (${res.status})${hint}: ${text}`);
 		}
 

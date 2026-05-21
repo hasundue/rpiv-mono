@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { createMockCtx, createMockPi, stubFetch } from "@juicesharp/rpiv-test-utils";
 import { beforeEach, describe, expect, it, type vi } from "vitest";
 import registerWebTools from "./index.js";
-import { configureSearxng, SEARXNG_DEFAULT_URL, SEARXNG_PROVIDER_META } from "./providers/index.js";
+import { configureSearxng, SEARXNG_DEFAULT_URL, SEARXNG_PROVIDER_META, SearxngProvider } from "./providers/index.js";
 
 const CONFIG_PATH = join(process.env.HOME!, ".config", "rpiv-web-tools", "config.json");
 
@@ -1234,6 +1234,20 @@ describe("web_search.execute — searxng", () => {
 		expect(new URL(stub.calls[0].url).pathname).toBe("/search");
 	});
 
+	it("multiple trailing slashes on baseUrl are all stripped", async () => {
+		process.env.SEARXNG_URL = "http://host:8080///";
+		writeConfig({ provider: "searxng" });
+		const stub = stubFetch([
+			{ match: (u) => u.includes("host:8080"), response: () => new Response(SEARXNG_OK_BODY, { status: 200 }) },
+		]);
+		const { captured } = registerAndCapture();
+		await captured.tools
+			.get("web_search")
+			?.execute?.("tc", { query: "x" }, undefined as never, undefined as never, createMockCtx());
+		expect(stub.calls[0].url).not.toMatch(/\/\/search/);
+		expect(new URL(stub.calls[0].url).pathname).toBe("/search");
+	});
+
 	it("sends Bearer Authorization only when an API key is configured", async () => {
 		process.env.SEARXNG_API_KEY = "env-bearer";
 		writeConfig({ provider: "searxng" });
@@ -1327,6 +1341,17 @@ describe("web_search.execute — searxng", () => {
 				.get("web_search")
 				?.execute?.("tc", { query: "x" }, undefined as never, undefined as never, createMockCtx()),
 		).rejects.toThrow(/JSON output disabled/);
+	});
+
+	it("401 attaches the 'reverse-proxy rejected the Bearer token' hint", async () => {
+		writeConfig({ provider: "searxng", apiKeys: { searxng: "bad-bearer" } });
+		stubFetch([{ match: () => true, response: () => new Response("unauthorized", { status: 401 }) }]);
+		const { captured } = registerAndCapture();
+		await expect(
+			captured.tools
+				.get("web_search")
+				?.execute?.("tc", { query: "x" }, undefined as never, undefined as never, createMockCtx()),
+		).rejects.toThrow(/rejected the Bearer token.*SEARXNG_API_KEY/);
 	});
 
 	it("normalizes missing fields on result rows to empty strings", async () => {
@@ -1447,6 +1472,36 @@ describe("SEARXNG_PROVIDER_META", () => {
 
 	it("declares baseUrlEnvVar as SEARXNG_URL (the URL that actually activates it)", () => {
 		expect(SEARXNG_PROVIDER_META.baseUrlEnvVar).toBe("SEARXNG_URL");
+	});
+});
+
+describe("SearxngProvider constructor", () => {
+	// A user-supplied SEARXNG_URL must not be allowed to silently become a
+	// non-http(s) scheme. `new URL()` accepts file://, javascript:, data:, etc.,
+	// so we reject anything outside http/https up front instead of letting it
+	// reach the fetch path.
+	it("accepts http baseUrl", () => {
+		expect(() => new SearxngProvider({ baseUrl: "http://localhost:8080" })).not.toThrow();
+	});
+
+	it("accepts https baseUrl", () => {
+		expect(() => new SearxngProvider({ baseUrl: "https://searx.example/" })).not.toThrow();
+	});
+
+	it("accepts an empty baseUrl (deferred-config state — search() then throws)", () => {
+		expect(() => new SearxngProvider({ baseUrl: "" })).not.toThrow();
+	});
+
+	it("rejects file:// scheme", () => {
+		expect(() => new SearxngProvider({ baseUrl: "file:///etc/passwd" })).toThrow(/must use http/);
+	});
+
+	it("rejects javascript: scheme", () => {
+		expect(() => new SearxngProvider({ baseUrl: "javascript:alert(1)" })).toThrow(/must use http/);
+	});
+
+	it("rejects an unparseable URL", () => {
+		expect(() => new SearxngProvider({ baseUrl: "not a url" })).toThrow(/is not a valid URL/);
 	});
 });
 
